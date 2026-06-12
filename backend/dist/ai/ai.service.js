@@ -58,7 +58,13 @@ let AiService = class AiService {
         const startTime = Date.now();
         const landmarks = gestureData.landmarks;
         if (!landmarks || landmarks.length === 0) {
-            const gestures = ['hello', 'thank you', 'please', 'yes', 'no', 'help', 'sorry', 'good', 'bad', 'love'];
+            const gestures = [
+                'hello', 'thank you', 'please', 'yes', 'no', 'help', 'sorry', 'good', 'bad', 'love',
+                'buy', 'sell', 'shop', 'work', 'home', 'school', 'family', 'friend', 'happy', 'sad',
+                'angry', 'tired', 'hungry', 'thirsty', 'cold', 'hot', 'phone', 'email', 'internet',
+                'computer', 'car', 'bus', 'train', 'airplane', 'doctor', 'hospital', 'medicine',
+                'pain', 'better', 'worse'
+            ];
             const randomGesture = gestures[Math.floor(Math.random() * gestures.length)];
             const confidence = 0.75 + Math.random() * 0.2;
             const processingTime = Date.now() - startTime;
@@ -304,6 +310,126 @@ let AiService = class AiService {
         }
         else if (extendedFingers === 5 && wrist.x < 0.2) {
             gesture = 'stop';
+            confidence = 0.85;
+        }
+        else if (thumbIndexDist < 0.08 && thumbIndexDist > 0.04 && middleExtended && ringExtended && pinkyExtended) {
+            gesture = 'buy';
+            confidence = 0.78;
+        }
+        else if (extendedFingers === 4 && !thumbExtended && wrist.y > 0.4) {
+            gesture = 'sell';
+            confidence = 0.75;
+        }
+        else if (extendedFingers <= 2 && wrist.y > 0.4 && wrist.x > 0.3 && wrist.x < 0.7) {
+            gesture = 'shop';
+            confidence = 0.75;
+        }
+        else if (extendedFingers === 0 && thumbTip.y < thumbPIP.y) {
+            gesture = 'work';
+            confidence = 0.78;
+        }
+        else if (indexExtended && middleExtended && indexMiddleDist > 0.08 && indexMiddleDist < 0.15 && !ringExtended && !pinkyExtended) {
+            gesture = 'home';
+            confidence = 0.8;
+        }
+        else if (extendedFingers === 5 && wrist.y > 0.5 && wrist.x > 0.4 && wrist.x < 0.6) {
+            gesture = 'school';
+            confidence = 0.75;
+        }
+        else if (thumbIndexDist < 0.06 && indexExtended && middleExtended && ringExtended && pinkyExtended) {
+            gesture = 'family';
+            confidence = 0.75;
+        }
+        else if (extendedFingers === 5 && wrist.y < 0.5 && wrist.x > 0.5) {
+            gesture = 'friend';
+            confidence = 0.75;
+        }
+        else if (indexExtended && middleExtended && indexTip.y > indexPIP.y && middleTip.y > middlePIP.y) {
+            gesture = 'happy';
+            confidence = 0.72;
+        }
+        else if (indexExtended && middleExtended && indexTip.y > wrist.y && middleTip.y > wrist.y) {
+            gesture = 'sad';
+            confidence = 0.7;
+        }
+        else if (extendedFingers === 0 && thumbTip.x > indexMCP.x) {
+            gesture = 'angry';
+            confidence = 0.75;
+        }
+        else if (extendedFingers >= 3 && wrist.y < 0.3 && wrist.x > 0.3 && wrist.x < 0.7) {
+            gesture = 'tired';
+            confidence = 0.7;
+        }
+        else if (extendedFingers >= 3 && wrist.y > 0.5 && wrist.x > 0.4 && wrist.x < 0.6) {
+            gesture = 'hungry';
+            confidence = 0.72;
+        }
+        else if (extendedFingers >= 2 && wrist.y > 0.4 && wrist.y < 0.5 && wrist.x > 0.4 && wrist.x < 0.6) {
+            gesture = 'thirsty';
+            confidence = 0.7;
+        }
+        else if (extendedFingers <= 2 && wrist.y > 0.5 && wrist.x < 0.3) {
+            gesture = 'cold';
+            confidence = 0.7;
+        }
+        else if (extendedFingers >= 3 && wrist.y < 0.3 && wrist.x > 0.3 && wrist.x < 0.7) {
+            gesture = 'hot';
+            confidence = 0.7;
+        }
+        else if (thumbExtended && pinkyExtended && !indexExtended && !middleExtended && !ringExtended && wrist.x > 0.6) {
+            gesture = 'phone';
+            confidence = 0.8;
+        }
+        else if (indexExtended && middleExtended && !ringExtended && !pinkyExtended && !thumbExtended && wrist.y > 0.5) {
+            gesture = 'email';
+            confidence = 0.72;
+        }
+        else if (extendedFingers === 5 && wrist.y > 0.4 && wrist.x > 0.2 && wrist.x < 0.8) {
+            gesture = 'internet';
+            confidence = 0.7;
+        }
+        else if (indexExtended && middleExtended && ringExtended && !pinkyExtended && !thumbExtended && wrist.y > 0.5) {
+            gesture = 'computer';
+            confidence = 0.72;
+        }
+        else if (extendedFingers <= 2 && wrist.y > 0.4 && wrist.x > 0.3 && wrist.x < 0.7) {
+            gesture = 'car';
+            confidence = 0.7;
+        }
+        else if (extendedFingers === 5 && wrist.y > 0.4 && wrist.x < 0.3) {
+            gesture = 'bus';
+            confidence = 0.7;
+        }
+        else if (indexExtended && middleExtended && indexMiddleDist < 0.05 && !ringExtended && !pinkyExtended && !thumbExtended) {
+            gesture = 'train';
+            confidence = 0.75;
+        }
+        else if (extendedFingers === 5 && wrist.y < 0.3 && wrist.x > 0.2 && wrist.x < 0.8) {
+            gesture = 'airplane';
+            confidence = 0.7;
+        }
+        else if (extendedFingers >= 3 && wrist.y > 0.5 && wrist.x > 0.4 && wrist.x < 0.6) {
+            gesture = 'doctor';
+            confidence = 0.7;
+        }
+        else if (indexExtended && middleExtended && indexMiddleDist > 0.1 && !ringExtended && !pinkyExtended && !thumbExtended) {
+            gesture = 'hospital';
+            confidence = 0.7;
+        }
+        else if (extendedFingers <= 2 && wrist.y < 0.4 && wrist.x > 0.4 && wrist.x < 0.6) {
+            gesture = 'medicine';
+            confidence = 0.7;
+        }
+        else if (extendedFingers >= 3 && wrist.y > 0.4 && wrist.x > 0.3 && wrist.x < 0.7) {
+            gesture = 'pain';
+            confidence = 0.7;
+        }
+        else if (thumbExtended && !indexExtended && !middleExtended && !ringExtended && !pinkyExtended && thumbTip.y < wrist.y) {
+            gesture = 'better';
+            confidence = 0.85;
+        }
+        else if (!thumbExtended && !indexExtended && !middleExtended && !ringExtended && !pinkyExtended && thumbTip.y > thumbPIP.y) {
+            gesture = 'worse';
             confidence = 0.85;
         }
         return { gesture, confidence };

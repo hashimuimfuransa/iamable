@@ -17,6 +17,10 @@ export default function TranslationStudioPage() {
   const [gestureHistory, setGestureHistory] = useState<string[]>([]);
   const [lastGesture, setLastGesture] = useState<string>('');
   const [gestureCooldown, setGestureCooldown] = useState(false);
+  const [autoSpeak, setAutoSpeak] = useState(true);
+  const [voiceInputText, setVoiceInputText] = useState('');
+  const [manualInputText, setManualInputText] = useState('');
+  const [signGestures, setSignGestures] = useState<string[]>([]);
   const { currentTranslation, isTranslating, setCurrentTranslation, setTranslating, setConfidenceScore } = useTranslationStore();
   const { fullscreenMode, setFullscreenMode } = useUIStore();
   const streamRef = useRef<MediaStream | null>(null);
@@ -24,6 +28,9 @@ export default function TranslationStudioPage() {
   const cooldownRef = useRef<NodeJS.Timeout | null>(null);
   const handsRef = useRef<any>(null);
   const landmarksRef = useRef<any[]>([]);
+  const voicesRef = useRef<SpeechSynthesisVoice[]>([]);
+  const isSpeakingRef = useRef(false);
+  const recognitionRef = useRef<any>(null);
 
   useEffect(() => {
     // Load MediaPipe Hands via CDN
@@ -56,6 +63,16 @@ export default function TranslationStudioPage() {
     };
     document.body.appendChild(script);
 
+    // Load voices for speech synthesis
+    const loadVoices = () => {
+      if ('speechSynthesis' in window) {
+        voicesRef.current = window.speechSynthesis.getVoices();
+      }
+    };
+
+    loadVoices();
+    window.speechSynthesis.onvoiceschanged = loadVoices;
+
     return () => {
       if (handsRef.current) {
         handsRef.current.close();
@@ -63,6 +80,7 @@ export default function TranslationStudioPage() {
       if (document.body.contains(script)) {
         document.body.removeChild(script);
       }
+      window.speechSynthesis.onvoiceschanged = null;
     };
   }, []);
 
@@ -74,6 +92,170 @@ export default function TranslationStudioPage() {
       stopCamera();
     };
   }, [isCameraOn]);
+
+  const convertTextToSign = (text: string) => {
+    // Word to gesture mapping
+    const wordToGesture: { [key: string]: string } = {
+      'hello': 'hello',
+      'hi': 'hello',
+      'thank': 'thank you',
+      'thanks': 'thank you',
+      'please': 'please',
+      'yes': 'yes',
+      'yeah': 'yes',
+      'no': 'no',
+      'help': 'help',
+      'sorry': 'sorry',
+      'good': 'good',
+      'bad': 'bad',
+      'love': 'love',
+      'buy': 'buy',
+      'sell': 'sell',
+      'shop': 'shop',
+      'work': 'work',
+      'home': 'home',
+      'school': 'school',
+      'family': 'family',
+      'friend': 'friend',
+      'happy': 'happy',
+      'sad': 'sad',
+      'angry': 'angry',
+      'tired': 'tired',
+      'hungry': 'hungry',
+      'thirsty': 'thirsty',
+      'cold': 'cold',
+      'hot': 'hot',
+      'phone': 'phone',
+      'email': 'email',
+      'internet': 'internet',
+      'computer': 'computer',
+      'car': 'car',
+      'bus': 'bus',
+      'train': 'train',
+      'airplane': 'airplane',
+      'doctor': 'doctor',
+      'hospital': 'hospital',
+      'medicine': 'medicine',
+      'pain': 'pain',
+      'better': 'better',
+      'worse': 'worse',
+      'one': 'one',
+      'two': 'two',
+      'three': 'three',
+      'four': 'four',
+      'five': 'five',
+      'six': 'six',
+      'seven': 'seven',
+      'eight': 'eight',
+      'nine': 'nine',
+      'ten': 'ten',
+      'stop': 'stop',
+      'go': 'go away',
+      'come': 'come here',
+      'eat': 'eat',
+      'drink': 'drink',
+      'sleep': 'sleep',
+      'listen': 'listen',
+      'look': 'look',
+      'walk': 'walk',
+      'run': 'run',
+      'sit': 'sit',
+      'stand': 'stand',
+      'time': 'time',
+      'money': 'money',
+      'quiet': 'quiet',
+      'wave': 'wave',
+      'clap': 'clap',
+      'rock': 'rock',
+      'call': 'call me',
+    };
+
+    // Split text into words and convert to gestures
+    const words = text.toLowerCase().split(/\s+/);
+    const gestures = words.map(word => {
+      // Remove punctuation
+      const cleanWord = word.replace(/[.,!?;:'"()]/g, '');
+      return wordToGesture[cleanWord] || cleanWord; // Return gesture or original word if not found
+    }).filter(gesture => gesture);
+
+    setSignGestures(gestures);
+  };
+
+  useEffect(() => {
+    // Initialize speech recognition
+    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      recognitionRef.current = new SpeechRecognition();
+      recognitionRef.current.continuous = true;
+      recognitionRef.current.interimResults = true;
+      recognitionRef.current.lang = 'en-US';
+
+      recognitionRef.current.onresult = (event: any) => {
+        let interimTranscript = '';
+        let finalTranscript = '';
+
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const transcript = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            finalTranscript += transcript;
+          } else {
+            interimTranscript += transcript;
+          }
+        }
+
+        if (finalTranscript) {
+          setVoiceInputText(finalTranscript);
+          convertTextToSign(finalTranscript);
+        }
+      };
+
+      recognitionRef.current.onerror = (event: any) => {
+        console.error('Speech recognition error:', event.error);
+        setIsListening(false);
+      };
+
+      recognitionRef.current.onend = () => {
+        if (isListening) {
+          recognitionRef.current.start();
+        }
+      };
+    }
+
+    return () => {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
+    };
+  }, [isListening]);
+
+  const toggleVoiceInput = () => {
+    if (isListening) {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
+      setIsListening(false);
+    } else {
+      if (recognitionRef.current) {
+        recognitionRef.current.start();
+      }
+      setIsListening(true);
+    }
+  };
+
+  const handleManualInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const text = e.target.value;
+    setManualInputText(text);
+    if (text.trim()) {
+      convertTextToSign(text);
+    } else {
+      setSignGestures([]);
+    }
+  };
+
+  const clearManualInput = () => {
+    setManualInputText('');
+    setSignGestures([]);
+  };
 
   const startCamera = async () => {
     try {
@@ -114,11 +296,16 @@ export default function TranslationStudioPage() {
                   setConfidenceScore(response.confidence);
                   setConfidence(response.confidence);
                   
-                  // Set cooldown to prevent rapid repeated gestures
+                  // Auto-speak if enabled
+                  if (autoSpeak) {
+                    speakText(response.gesture);
+                  }
+                  
+                  // Set cooldown to prevent rapid repeated gestures (reduced for faster response)
                   setGestureCooldown(true);
                   cooldownRef.current = setTimeout(() => {
                     setGestureCooldown(false);
-                  }, 2000);
+                  }, 1000);
                 }
               }
             }
@@ -148,6 +335,10 @@ export default function TranslationStudioPage() {
     }
     if (videoRef.current && videoRef.current.srcObject) {
       videoRef.current.srcObject = null;
+    }
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+      isSpeakingRef.current = false;
     }
     landmarksRef.current = [];
     setGestureHistory([]);
@@ -182,6 +373,65 @@ export default function TranslationStudioPage() {
       alert('Translation saved!');
     } catch (error) {
       console.error('Error saving translation:', error);
+    }
+  };
+
+  const preprocessText = (text: string): string => {
+    // Capitalize first letter for better pronunciation
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  };
+
+  const speakText = (text: string) => {
+    if (!('speechSynthesis' in window) || isSpeakingRef.current) return;
+
+    const processedText = preprocessText(text);
+    window.speechSynthesis.cancel();
+
+    const utterance = new SpeechSynthesisUtterance(processedText);
+    
+    // Optimize speech parameters for natural real-time speech
+    utterance.rate = 1.0; // Normal speed for real-time
+    utterance.pitch = 1.0; // Natural pitch
+    utterance.volume = 1.0; // Full volume
+    
+    // Select best available voice
+    const voices = voicesRef.current;
+    let preferredVoice = voices.find(voice => 
+      voice.lang.startsWith('en') && 
+      (voice.name.includes('Google') || voice.name.includes('Natural') || voice.name.includes('Premium'))
+    );
+    
+    if (!preferredVoice) {
+      preferredVoice = voices.find(voice => voice.lang.startsWith('en-US'));
+    }
+    
+    if (!preferredVoice) {
+      preferredVoice = voices.find(voice => voice.lang.startsWith('en'));
+    }
+    
+    if (preferredVoice) {
+      utterance.voice = preferredVoice;
+    }
+
+    // Track speaking state
+    utterance.onstart = () => {
+      isSpeakingRef.current = true;
+    };
+
+    utterance.onend = () => {
+      isSpeakingRef.current = false;
+    };
+
+    utterance.onerror = () => {
+      isSpeakingRef.current = false;
+    };
+
+    window.speechSynthesis.speak(utterance);
+  };
+
+  const handleSpeak = () => {
+    if (currentTranslation) {
+      speakText(currentTranslation);
     }
   };
 
@@ -328,7 +578,30 @@ export default function TranslationStudioPage() {
                 </div>
               )}
 
+              <div className="flex items-center gap-4 mb-4">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={autoSpeak}
+                    onChange={(e) => setAutoSpeak(e.target.checked)}
+                    className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  <span className="text-sm text-slate-600 dark:text-slate-300">
+                    Auto-speak translations
+                  </span>
+                </label>
+              </div>
+
               <div className="flex gap-2">
+                <Button
+                  onClick={handleSpeak}
+                  disabled={!currentTranslation}
+                  variant="outline"
+                  className="flex-1"
+                >
+                  <Volume2 className="w-4 h-4 mr-2" />
+                  Speak Translation
+                </Button>
                 <Button
                   onClick={saveTranslation}
                   disabled={!currentTranslation}
@@ -343,7 +616,7 @@ export default function TranslationStudioPage() {
         </motion.div>
       </div>
 
-      {/* Voice Input Section */}
+      {/* Text to Sign Section */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -353,24 +626,76 @@ export default function TranslationStudioPage() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Mic className="w-5 h-5" />
-              Voice Input
+              Text to Sign
             </CardTitle>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-4">
+            {/* Voice Input */}
             <div className="flex gap-2">
               <Button
-                onClick={() => setIsListening(!isListening)}
+                onClick={toggleVoiceInput}
                 variant={isListening ? 'secondary' : 'outline'}
                 className="flex-1"
               >
                 <Mic className="w-4 h-4 mr-2" />
-                {isListening ? 'Stop Listening' : 'Start Voice Input'}
+                {isListening ? 'Stop Voice Input' : 'Start Voice Input'}
               </Button>
             </div>
             {isListening && (
-              <p className="mt-4 text-slate-600 dark:text-slate-300 text-center">
-                Listening... Speak now
-              </p>
+              <div className="flex items-center justify-center gap-2">
+                <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse" />
+                <p className="text-slate-600 dark:text-slate-300">Listening... Speak now</p>
+              </div>
+            )}
+            
+            {voiceInputText && (
+              <div className="bg-slate-50 dark:bg-slate-800 rounded-xl p-4">
+                <p className="text-sm text-slate-600 dark:text-slate-400 mb-2">Recognized Text:</p>
+                <p className="text-lg font-medium text-slate-900 dark:text-white">{voiceInputText}</p>
+              </div>
+            )}
+
+            {/* Manual Text Input */}
+            <div className="space-y-2">
+              <label className="text-sm text-slate-600 dark:text-slate-400">Or type text manually:</label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={manualInputText}
+                  onChange={handleManualInputChange}
+                  placeholder="Type text to convert to sign language..."
+                  className="flex-1 px-4 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                {manualInputText && (
+                  <Button
+                    onClick={clearManualInput}
+                    variant="outline"
+                    size="sm"
+                  >
+                    ×
+                  </Button>
+                )}
+              </div>
+            </div>
+
+            {/* Sign Gestures Display */}
+            {signGestures.length > 0 && (
+              <div className="bg-gradient-to-br from-teal-50 to-blue-50 dark:from-teal-900/20 dark:to-blue-900/20 rounded-xl p-4">
+                <p className="text-sm text-slate-600 dark:text-slate-400 mb-3">Sign Language Gestures:</p>
+                <div className="flex flex-wrap gap-2">
+                  {signGestures.map((gesture, index) => (
+                    <motion.div
+                      key={index}
+                      initial={{ opacity: 0, scale: 0.8 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      transition={{ delay: index * 0.1 }}
+                      className="px-4 py-2 bg-teal-100 dark:bg-teal-900 text-teal-800 dark:text-teal-200 rounded-lg text-lg font-bold"
+                    >
+                      {gesture}
+                    </motion.div>
+                  ))}
+                </div>
+              </div>
             )}
           </CardContent>
         </Card>

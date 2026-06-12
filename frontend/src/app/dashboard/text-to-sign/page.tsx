@@ -1,48 +1,144 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Type, Play, Save, Volume2, RotateCcw } from 'lucide-react';
+import { Type, Play, Save, Volume2, RotateCcw, Image as ImageIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { api } from '@/lib/api';
 
+// ASL sign language image mapping using lifeprint.com (reliable ASL resource)
+const getSignImageUrl = (letter: string): string => {
+  const lowerLetter = letter.toLowerCase().replace(/[^a-z0-9]/g, '');
+  
+  // Using ASL alphabet images from lifeprint.com
+  const signImageMap: { [key: string]: string } = {
+    'a': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/a.gif',
+    'b': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/b.gif',
+    'c': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/c.gif',
+    'd': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/d.gif',
+    'e': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/e.gif',
+    'f': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/f.gif',
+    'g': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/g.gif',
+    'h': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/h.gif',
+    'i': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/i.gif',
+    'j': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/j.gif',
+    'k': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/k.gif',
+    'l': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/l.gif',
+    'm': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/m.gif',
+    'n': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/n.gif',
+    'o': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/o.gif',
+    'p': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/p.gif',
+    'q': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/q.gif',
+    'r': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/r.gif',
+    's': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/s.gif',
+    't': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/t.gif',
+    'u': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/u.gif',
+    'v': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/v.gif',
+    'w': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/w.gif',
+    'x': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/x.gif',
+    'y': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/y.gif',
+    'z': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/z.gif',
+    // Numbers using letter-based fallback
+    '0': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/a.gif',
+    '1': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/b.gif',
+    '2': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/c.gif',
+    '3': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/d.gif',
+    '4': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/e.gif',
+    '5': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/f.gif',
+    '6': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/g.gif',
+    '7': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/h.gif',
+    '8': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/i.gif',
+    '9': 'https://www.lifeprint.com/asl101/fingerspelling/abc-gifs/j.gif',
+  };
+
+  return signImageMap[lowerLetter] || '';
+};
+
+// Convert word to array of letter images
+const getWordSignImages = (word: string): string[] => {
+  const letters = word.toLowerCase().replace(/[^a-z0-9]/g, '').split('');
+  return letters.map(letter => getSignImageUrl(letter)).filter(url => url);
+};
+
 export default function TextToSignPage() {
   const [text, setText] = useState('');
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentSign, setCurrentSign] = useState('');
+  const [signImages, setSignImages] = useState<{ letter: string; imageUrl: string }[]>([]);
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [imageLoadErrors, setImageLoadErrors] = useState<Set<number>>(new Set());
+
+  // Real-time conversion as user types
+  useEffect(() => {
+    if (text.trim()) {
+      const letters = text.toLowerCase().replace(/[^a-z0-9\s]/g, '').split('');
+      const images = letters.map(letter => ({
+        letter: letter.toUpperCase(),
+        imageUrl: getSignImageUrl(letter)
+      })).filter(item => item.imageUrl);
+      setSignImages(images);
+      setImageLoadErrors(new Set());
+    } else {
+      setSignImages([]);
+      setImageLoadErrors(new Set());
+    }
+  }, [text]);
+
+  const handleImageError = (index: number) => {
+    setImageLoadErrors(prev => new Set(prev).add(index));
+  };
 
   const handleConvert = () => {
-    if (!text.trim()) return;
-    
-    // Simulate text-to-sign conversion
-    const words = text.split(' ');
-    let index = 0;
+    if (!text.trim() || signImages.length === 0) return;
     
     setIsPlaying(true);
+    setCurrentIndex(0);
     
     const interval = setInterval(() => {
-      if (index >= words.length) {
-        clearInterval(interval);
-        setIsPlaying(false);
-        setCurrentSign('');
-        return;
-      }
-      
-      setCurrentSign(words[index]);
-      index++;
-    }, 1500);
+      setCurrentIndex(prev => {
+        if (prev >= signImages.length - 1) {
+          clearInterval(interval);
+          setIsPlaying(false);
+          return 0;
+        }
+        return prev + 1;
+      });
+    }, 2000);
   };
 
   const handleReset = () => {
     setText('');
     setCurrentSign('');
     setIsPlaying(false);
+    setSignImages([]);
+    setCurrentIndex(0);
   };
 
   const handleSave = async () => {
     if (!text.trim()) return;
+    
+    // Check if user is authenticated
+    let token = null;
+    if (typeof window !== 'undefined') {
+      const authStorage = localStorage.getItem('auth-storage');
+      if (authStorage) {
+        try {
+          const authData = JSON.parse(authStorage);
+          token = authData.state?.accessToken;
+        } catch (e) {
+          token = localStorage.getItem('accessToken');
+        }
+      } else {
+        token = localStorage.getItem('accessToken');
+      }
+    }
+
+    if (!token) {
+      alert('Please log in to save translations');
+      return;
+    }
     
     try {
       await api.translations.create({
@@ -54,6 +150,7 @@ export default function TextToSignPage() {
       alert('Translation saved!');
     } catch (error) {
       console.error('Error saving translation:', error);
+      alert('Failed to save translation. Please make sure you are logged in.');
     }
   };
 
@@ -155,32 +252,88 @@ export default function TextToSignPage() {
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
-                <Type className="w-5 h-5" />
+                <ImageIcon className="w-5 h-5" />
                 Sign Language Display
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="bg-gradient-to-br from-blue-50 to-teal-50 dark:from-blue-900/20 dark:to-teal-900/20 rounded-xl p-8 min-h-[300px] flex items-center justify-center">
-                {currentSign ? (
-                  <motion.div
-                    initial={{ opacity: 0, scale: 0.8 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    className="text-center"
-                  >
-                    <div className="w-32 h-32 mx-auto mb-4 rounded-full bg-gradient-to-br from-blue-500 to-teal-500 flex items-center justify-center text-white text-6xl font-bold shadow-lg">
-                      {currentSign.charAt(0).toUpperCase()}
-                    </div>
-                    <p className="text-4xl font-bold text-slate-900 dark:text-white mb-2">
-                      {currentSign}
-                    </p>
-                    <p className="text-slate-600 dark:text-slate-300">
-                      Sign representation
-                    </p>
-                  </motion.div>
+              <div className="bg-gradient-to-br from-blue-50 to-teal-50 dark:from-blue-900/20 dark:to-teal-900/20 rounded-xl p-8 min-h-[300px]">
+                {signImages.length > 0 ? (
+                  <div className="space-y-4">
+                    {/* Current sign being played */}
+                    {isPlaying && signImages[currentIndex] && (
+                      <motion.div
+                        key={currentIndex}
+                        initial={{ opacity: 0, scale: 0.8 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        className="text-center"
+                      >
+                        <div className="w-48 h-48 mx-auto mb-4 rounded-xl overflow-hidden bg-white shadow-lg flex items-center justify-center">
+                          {!imageLoadErrors.has(currentIndex) ? (
+                            <img
+                              src={signImages[currentIndex].imageUrl}
+                              alt={`Sign for ${signImages[currentIndex].letter}`}
+                              className="w-full h-full object-contain"
+                              onError={() => handleImageError(currentIndex)}
+                            />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-blue-500 to-teal-500">
+                              <span className="text-white text-6xl font-bold">
+                                {signImages[currentIndex].letter}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                        <p className="text-4xl font-bold text-slate-900 dark:text-white mb-2">
+                          {signImages[currentIndex].letter}
+                        </p>
+                        <p className="text-slate-600 dark:text-slate-300">
+                          Sign {currentIndex + 1} of {signImages.length}
+                        </p>
+                      </motion.div>
+                    )}
+
+                    {/* All signs grid (when not playing) */}
+                    {!isPlaying && (
+                      <div className="grid grid-cols-6 gap-3">
+                        {signImages.map((item, index) => (
+                          <motion.div
+                            key={index}
+                            initial={{ opacity: 0, scale: 0.8 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            transition={{ delay: index * 0.02 }}
+                            className="text-center"
+                          >
+                            <div className="w-full aspect-square rounded-xl overflow-hidden bg-white shadow-md mb-2 flex items-center justify-center">
+                              {!imageLoadErrors.has(index) ? (
+                                <img
+                                  src={item.imageUrl}
+                                  alt={`Sign for ${item.letter}`}
+                                  className="w-full h-full object-contain"
+                                  onError={() => handleImageError(index)}
+                                />
+                              ) : (
+                                <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-blue-500 to-teal-500">
+                                  <span className="text-white text-2xl font-bold">
+                                    {item.letter}
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                            <p className="text-sm font-medium text-slate-900 dark:text-white">
+                              {item.letter}
+                            </p>
+                          </motion.div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 ) : (
-                  <div className="text-center text-slate-400">
-                    <Type className="w-16 h-16 mx-auto mb-4 opacity-50" />
-                    <p className="text-lg">Enter text and click convert to see sign language</p>
+                  <div className="flex items-center justify-center h-full min-h-[200px] text-slate-400">
+                    <div className="text-center">
+                      <ImageIcon className="w-16 h-16 mx-auto mb-4 opacity-50" />
+                      <p className="text-lg">Type text to see sign language images</p>
+                    </div>
                   </div>
                 )}
               </div>
