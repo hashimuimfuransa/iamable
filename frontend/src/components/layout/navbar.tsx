@@ -5,13 +5,10 @@ import Link from 'next/link';
 import { motion } from 'framer-motion';
 import { Menu, X, LogOut, User, Settings } from 'lucide-react';
 import { useAuthStore } from '@/store/auth-store';
-import { useUIStore } from '@/store/ui-store';
 import { Button } from '@/components/ui/button';
-import { cn } from '@/lib/utils';
 
 export const Navbar = () => {
   const { isAuthenticated, user, logout } = useAuthStore();
-  const { darkMode, toggleDarkMode } = useUIStore();
   const [mobileMenuOpen, setMobileMenuOpen] = React.useState(false);
 
   const navLinks = [
@@ -26,10 +23,7 @@ export const Navbar = () => {
     <motion.nav
       initial={{ y: -100 }}
       animate={{ y: 0 }}
-      className={cn(
-        'fixed top-0 left-0 right-0 z-50 border-b backdrop-blur-xl',
-        darkMode ? 'bg-slate-900/80 border-slate-800' : 'bg-white/80 border-slate-200'
-      )}
+      className="fixed top-0 left-0 right-0 z-50 border-b backdrop-blur-xl bg-white/80 border-slate-200"
     >
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-16">
@@ -42,7 +36,7 @@ export const Navbar = () => {
               <Link
                 key={link.href}
                 href={link.href}
-                className="text-slate-700 hover:text-blue-600 dark:text-slate-300 dark:hover:text-blue-400 transition-colors font-medium"
+                className="text-slate-700 hover:text-blue-600 transition-colors font-medium"
               >
                 {link.label}
               </Link>
@@ -76,7 +70,7 @@ export const Navbar = () => {
           </div>
 
           <button
-            className="md:hidden p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300"
+            className="md:hidden p-2 rounded-lg hover:bg-slate-100 text-slate-700"
             onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
             aria-label="Toggle menu"
           >
@@ -90,17 +84,14 @@ export const Navbar = () => {
           initial={{ opacity: 0, height: 0 }}
           animate={{ opacity: 1, height: 'auto' }}
           exit={{ opacity: 0, height: 0 }}
-          className={cn(
-            'md:hidden border-t',
-            darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'
-          )}
+          className="md:hidden border-t bg-white border-slate-200"
         >
           <div className="px-4 py-4 space-y-4">
             {navLinks.map((link) => (
               <Link
                 key={link.href}
                 href={link.href}
-                className="block text-slate-700 hover:text-blue-600 dark:text-slate-300 dark:hover:text-blue-400 transition-colors font-medium"
+                className="block text-slate-700 hover:text-blue-600 transition-colors font-medium"
                 onClick={() => setMobileMenuOpen(false)}
               >
                 {link.label}
