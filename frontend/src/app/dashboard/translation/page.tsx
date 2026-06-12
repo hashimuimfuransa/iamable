@@ -318,17 +318,22 @@ export default function TranslationStudioPage() {
                   setCurrentTranslation(response.gesture);
                   setConfidenceScore(response.confidence);
                   setConfidence(response.confidence);
-                  
+
                   // Auto-speak if enabled
                   if (autoSpeak) {
                     speakText(response.gesture);
                   }
-                  
+
                   // Set cooldown to prevent rapid repeated gestures (reduced for faster response)
                   setGestureCooldown(true);
                   cooldownRef.current = setTimeout(() => {
                     setGestureCooldown(false);
                   }, 1000);
+                }
+              } else {
+                // Clear lastGesture when confidence drops, allowing gesture to be detected again
+                if (lastGesture) {
+                  setLastGesture('');
                 }
               }
             }
