@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useAuthStore } from '@/store/auth-store';
 import { useRouter } from 'next/navigation';
 import { Hand, Mic, Type, Activity, Bookmark, TrendingUp } from 'lucide-react';
@@ -15,14 +15,26 @@ export default function DashboardPage() {
     savedTranslations: 0,
     avgConfidence: 0,
   });
+  const [isHydrated, setIsHydrated] = useState(false);
 
   useEffect(() => {
+    // Wait for zustand persist to hydrate from localStorage
+    setIsHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isHydrated) return;
+    
     if (!isAuthenticated) {
       router.push('/login');
     } else {
       fetchStats();
     }
-  }, [isAuthenticated, router]);
+  }, [isAuthenticated, router, isHydrated]);
+
+  if (!isHydrated) {
+    return null;
+  }
 
   const fetchStats = async () => {
     try {

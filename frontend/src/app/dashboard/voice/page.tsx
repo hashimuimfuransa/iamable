@@ -1,17 +1,37 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { Mic, MicOff, Save, Volume2, RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { api } from '@/lib/api';
+import { useAuthStore } from '@/store/auth-store';
 
 export default function VoiceToSignPage() {
+  const router = useRouter();
+  const { isAuthenticated } = useAuthStore();
+  const [isHydrated, setIsHydrated] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [currentSign, setCurrentSign] = useState('');
   const recognitionRef = useRef<any>(null);
+
+  useEffect(() => {
+    setIsHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isHydrated) return;
+    if (!isAuthenticated) {
+      router.push('/login');
+    }
+  }, [isAuthenticated, router, isHydrated]);
+
+  if (!isHydrated) {
+    return null;
+  }
 
   useEffect(() => {
     if (typeof window !== 'undefined' && 'webkitSpeechRecognition' in window) {

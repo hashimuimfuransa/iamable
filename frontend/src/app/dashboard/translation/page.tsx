@@ -1,15 +1,20 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { Camera, CameraOff, Video, Mic, Maximize2, Minimize2, Save, Volume2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { useTranslationStore } from '@/store/translation-store';
 import { useUIStore } from '@/store/ui-store';
+import { useAuthStore } from '@/store/auth-store';
 import { api } from '@/lib/api';
 
 export default function TranslationStudioPage() {
+  const router = useRouter();
+  const { isAuthenticated } = useAuthStore();
+  const [isHydrated, setIsHydrated] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isCameraOn, setIsCameraOn] = useState(false);
   const [isListening, setIsListening] = useState(false);
@@ -33,6 +38,18 @@ export default function TranslationStudioPage() {
   const recognitionRef = useRef<any>(null);
 
   useEffect(() => {
+    setIsHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isHydrated) return;
+    if (!isAuthenticated) {
+      router.push('/login');
+    }
+  }, [isAuthenticated, router, isHydrated]);
+
+  useEffect(() => {
+    if (!isHydrated) return;
     // Load MediaPipe Hands via CDN
     const script = document.createElement('script');
     script.src = 'https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js';
@@ -82,16 +99,69 @@ export default function TranslationStudioPage() {
       }
       window.speechSynthesis.onvoiceschanged = null;
     };
-  }, []);
+  }, [isHydrated]);
 
   useEffect(() => {
+    if (!isHydrated) return;
     if (isCameraOn && videoRef.current) {
       startCamera();
     }
     return () => {
       stopCamera();
     };
-  }, [isCameraOn]);
+  }, [isCameraOn, isHydrated]);
+
+  useEffect(() => {
+    if (!isHydrated) return;
+    // Initialize speech recognition
+    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      recognitionRef.current = new SpeechRecognition();
+      recognitionRef.current.continuous = true;
+      recognitionRef.current.interimResults = true;
+      recognitionRef.current.lang = 'en-US';
+
+      recognitionRef.current.onresult = (event: any) => {
+        let interimTranscript = '';
+        let finalTranscript = '';
+
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const transcript = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            finalTranscript += transcript;
+          } else {
+            interimTranscript += transcript;
+          }
+        }
+
+        if (finalTranscript) {
+          setVoiceInputText(finalTranscript);
+          convertTextToSign(finalTranscript);
+        }
+      };
+
+      recognitionRef.current.onerror = (event: any) => {
+        console.error('Speech recognition error:', event.error);
+        setIsListening(false);
+      };
+
+      recognitionRef.current.onend = () => {
+        if (isListening) {
+          recognitionRef.current.start();
+        }
+      };
+    }
+
+    return () => {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
+    };
+  }, [isListening, isHydrated]);
+
+  if (!isHydrated) {
+    return null;
+  }
 
   const convertTextToSign = (text: string) => {
     // Word to gesture mapping
@@ -180,53 +250,6 @@ export default function TranslationStudioPage() {
 
     setSignGestures(gestures);
   };
-
-  useEffect(() => {
-    // Initialize speech recognition
-    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      recognitionRef.current = new SpeechRecognition();
-      recognitionRef.current.continuous = true;
-      recognitionRef.current.interimResults = true;
-      recognitionRef.current.lang = 'en-US';
-
-      recognitionRef.current.onresult = (event: any) => {
-        let interimTranscript = '';
-        let finalTranscript = '';
-
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const transcript = event.results[i][0].transcript;
-          if (event.results[i].isFinal) {
-            finalTranscript += transcript;
-          } else {
-            interimTranscript += transcript;
-          }
-        }
-
-        if (finalTranscript) {
-          setVoiceInputText(finalTranscript);
-          convertTextToSign(finalTranscript);
-        }
-      };
-
-      recognitionRef.current.onerror = (event: any) => {
-        console.error('Speech recognition error:', event.error);
-        setIsListening(false);
-      };
-
-      recognitionRef.current.onend = () => {
-        if (isListening) {
-          recognitionRef.current.start();
-        }
-      };
-    }
-
-    return () => {
-      if (recognitionRef.current) {
-        recognitionRef.current.stop();
-      }
-    };
-  }, [isListening]);
 
   const toggleVoiceInput = () => {
     if (isListening) {
@@ -382,7 +405,7 @@ export default function TranslationStudioPage() {
   };
 
   const speakText = (text: string) => {
-    if (!('speechSynthesis' in window) || isSpeakingRef.current) return;
+    if (!('speechSynthesis' in window)) return;
 
     const processedText = preprocessText(text);
     window.speechSynthesis.cancel();

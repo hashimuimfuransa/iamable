@@ -1,12 +1,14 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { Type, Play, Save, Volume2, RotateCcw, Image as ImageIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { api } from '@/lib/api';
+import { useAuthStore } from '@/store/auth-store';
 
 // ASL sign language image mapping using lifeprint.com (reliable ASL resource)
 const getSignImageUrl = (letter: string): string => {
@@ -56,19 +58,30 @@ const getSignImageUrl = (letter: string): string => {
   return signImageMap[lowerLetter] || '';
 };
 
-// Convert word to array of letter images
-const getWordSignImages = (word: string): string[] => {
-  const letters = word.toLowerCase().replace(/[^a-z0-9]/g, '').split('');
-  return letters.map(letter => getSignImageUrl(letter)).filter(url => url);
-};
-
 export default function TextToSignPage() {
+  const router = useRouter();
+  const { isAuthenticated } = useAuthStore();
+  const [isHydrated, setIsHydrated] = useState(false);
   const [text, setText] = useState('');
   const [isPlaying, setIsPlaying] = useState(false);
-  const [currentSign, setCurrentSign] = useState('');
   const [signImages, setSignImages] = useState<{ letter: string; imageUrl: string }[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [imageLoadErrors, setImageLoadErrors] = useState<Set<number>>(new Set());
+
+  useEffect(() => {
+    setIsHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isHydrated) return;
+    if (!isAuthenticated) {
+      router.push('/login');
+    }
+  }, [isAuthenticated, router, isHydrated]);
+
+  if (!isHydrated) {
+    return null;
+  }
 
   // Real-time conversion as user types
   useEffect(() => {
@@ -110,7 +123,6 @@ export default function TextToSignPage() {
 
   const handleReset = () => {
     setText('');
-    setCurrentSign('');
     setIsPlaying(false);
     setSignImages([]);
     setCurrentIndex(0);
@@ -118,27 +130,6 @@ export default function TextToSignPage() {
 
   const handleSave = async () => {
     if (!text.trim()) return;
-    
-    // Check if user is authenticated
-    let token = null;
-    if (typeof window !== 'undefined') {
-      const authStorage = localStorage.getItem('auth-storage');
-      if (authStorage) {
-        try {
-          const authData = JSON.parse(authStorage);
-          token = authData.state?.accessToken;
-        } catch (e) {
-          token = localStorage.getItem('accessToken');
-        }
-      } else {
-        token = localStorage.getItem('accessToken');
-      }
-    }
-
-    if (!token) {
-      alert('Please log in to save translations');
-      return;
-    }
     
     try {
       await api.translations.create({

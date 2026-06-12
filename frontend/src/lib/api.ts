@@ -36,6 +36,15 @@ export async function fetchAPI(endpoint: string, options: RequestInit = {}) {
   });
 
   if (!response.ok) {
+    if (response.status === 401) {
+      // Token expired or invalid - clear auth and redirect to login
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('auth-storage');
+        localStorage.removeItem('accessToken');
+        window.location.href = '/login';
+      }
+      throw new Error('Authentication required. Please login again.');
+    }
     const error = await response.json().catch(() => ({}));
     throw new Error(error.message || 'An error occurred');
   }

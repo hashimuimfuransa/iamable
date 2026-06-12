@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
@@ -13,10 +13,23 @@ import { api } from '@/lib/api';
 
 export default function LoginPage() {
   const router = useRouter();
-  const { setAuth } = useAuthStore();
+  const { setAuth, isAuthenticated } = useAuthStore();
   const [formData, setFormData] = useState({ email: '', password: '' });
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
+  const [isChecking, setIsChecking] = useState(true);
+
+  useEffect(() => {
+    // Redirect if already authenticated
+    if (isAuthenticated) {
+      router.push('/dashboard');
+    }
+    setIsChecking(false);
+  }, [isAuthenticated, router]);
+
+  if (isChecking) {
+    return null;
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

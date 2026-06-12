@@ -74,14 +74,6 @@ export const Sidebar = () => {
 
   return (
     <>
-      {/* Mobile Menu Button */}
-      <button
-        onClick={toggleSidebar}
-        className="md:hidden fixed top-20 left-4 z-50 p-2 bg-white dark:bg-slate-800 rounded-lg shadow-lg border border-slate-200 dark:border-slate-700"
-        aria-label="Toggle menu"
-      >
-        {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
-      </button>
 
       {/* Mobile Overlay */}
       <AnimatePresence>
