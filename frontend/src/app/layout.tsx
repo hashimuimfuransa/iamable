@@ -4,6 +4,7 @@ import "./globals.css";
 import { Navbar } from "@/components/layout/navbar";
 import { Footer } from "@/components/layout/footer";
 import { AccessibilityToolbar } from "@/components/accessibility/accessibility-toolbar";
+import { DarkModeProvider } from "@/components/providers/dark-mode-provider";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -24,11 +25,13 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${inter.variable} antialiased`}>
-      <body className="min-h-screen flex flex-col bg-gradient-to-br from-slate-50 to-blue-50">
-        <Navbar />
-        <main className="flex-1">{children}</main>
-        <AccessibilityToolbar />
+    <html lang="en" className={`${inter.variable} antialiased`} suppressHydrationWarning>
+      <body className="min-h-screen flex flex-col bg-gradient-to-br from-slate-50 to-blue-50 dark:from-slate-900 dark:to-slate-800">
+        <DarkModeProvider>
+          <Navbar />
+          <main className="flex-1">{children}</main>
+          <AccessibilityToolbar />
+        </DarkModeProvider>
       </body>
     </html>
   );
