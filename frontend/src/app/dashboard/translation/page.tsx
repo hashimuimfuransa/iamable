@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { Camera, CameraOff, Video, Mic, Maximize2, Minimize2, Save, Volume2 } from 'lucide-react';
@@ -22,17 +22,25 @@ export default function TranslationStudioPage() {
   const [gestureHistory, setGestureHistory] = useState<string[]>([]);
   const [lastGesture, setLastGesture] = useState<string>('');
   const [gestureCooldown, setGestureCooldown] = useState(false);
+  const [gestureBuffer, setGestureBuffer] = useState<string[]>([]);
+  const bufferSize = 3;
   const [autoSpeak, setAutoSpeak] = useState(true);
   const [voiceInputText, setVoiceInputText] = useState('');
   const [manualInputText, setManualInputText] = useState('');
   const [signGestures, setSignGestures] = useState<string[]>([]);
+  const [selectedLanguage, setSelectedLanguage] = useState('rw-RW');
+  const [patternConfidence, setPatternConfidence] = useState(0);
   const { currentTranslation, isTranslating, setCurrentTranslation, setTranslating, setConfidenceScore } = useTranslationStore();
   const { fullscreenMode, setFullscreenMode } = useUIStore();
   const streamRef = useRef<MediaStream | null>(null);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const cooldownRef = useRef<NodeJS.Timeout | null>(null);
   const handsRef = useRef<any>(null);
+  const gestureRecognizerRef = useRef<any>(null);
   const landmarksRef = useRef<any[]>([]);
+  const gestureRecognizerReadyRef = useRef(false);
+  const animFrameRef = useRef<number | null>(null);
+  const lastGestureRef = useRef<string>('');
   const voicesRef = useRef<SpeechSynthesisVoice[]>([]);
   const isSpeakingRef = useRef(false);
   const recognitionRef = useRef<any>(null);
@@ -48,37 +56,20 @@ export default function TranslationStudioPage() {
     }
   }, [isAuthenticated, router, isHydrated]);
 
+  // Kinyarwanda label mapping for MediaPipe built-in gestures
+  const gestureToKinyarwanda: Record<string, string> = {
+    'None':          '',
+    'Closed_Fist':   'oya (no)',
+    'Open_Palm':     'muraho (hello)',
+    'Pointing_Up':   'yego (yes)',
+    'Thumb_Down':    'bibi (bad)',
+    'Thumb_Up':      'byiza (good)',
+    'Victory':       'urakoze (thank you)',
+    'ILoveYou':      'gukunda (love)',
+  };
+
   useEffect(() => {
     if (!isHydrated) return;
-    // Load MediaPipe Hands via CDN
-    const script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js';
-    script.async = true;
-    script.onload = () => {
-      // @ts-ignore
-      if (window.Hands) {
-        // @ts-ignore
-        handsRef.current = new window.Hands({
-          locateFile: (file: string) => {
-            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
-          }
-        });
-
-        handsRef.current.setOptions({
-          maxNumHands: 2,
-          modelComplexity: 1,
-          minDetectionConfidence: 0.5,
-          minTrackingConfidence: 0.5
-        });
-
-        handsRef.current.onResults((results: any) => {
-          if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-            landmarksRef.current = results.multiHandLandmarks[0];
-          }
-        });
-      }
-    };
-    document.body.appendChild(script);
 
     // Load voices for speech synthesis
     const loadVoices = () => {
@@ -86,18 +77,46 @@ export default function TranslationStudioPage() {
         voicesRef.current = window.speechSynthesis.getVoices();
       }
     };
-
     loadVoices();
     window.speechSynthesis.onvoiceschanged = loadVoices;
 
+    // Initialise MediaPipe Gesture Recognizer (tasks-vision)
+    const initGestureRecognizer = async () => {
+      try {
+        const vision = await import('@mediapipe/tasks-vision');
+        const { GestureRecognizer, FilesetResolver } = vision;
+        // Use the exact installed version to match local WASM files
+        const TASKS_VISION_VERSION = '0.10.35';
+        const filesetResolver = await FilesetResolver.forVisionTasks(
+          `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${TASKS_VISION_VERSION}/wasm`
+        );
+        const recognizer = await GestureRecognizer.createFromOptions(filesetResolver, {
+          baseOptions: {
+            modelAssetPath:
+              'https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task',
+            delegate: 'CPU',
+          },
+          runningMode: 'VIDEO',
+          numHands: 1,
+          minHandDetectionConfidence: 0.5,
+          minHandPresenceConfidence: 0.5,
+          minTrackingConfidence: 0.5,
+        });
+        gestureRecognizerRef.current = recognizer;
+        gestureRecognizerReadyRef.current = true;
+        console.log('MediaPipe Gesture Recognizer ready (v' + TASKS_VISION_VERSION + ')');
+      } catch (err) {
+        console.error('Failed to load Gesture Recognizer:', err);
+      }
+    };
+
+    initGestureRecognizer();
+
     return () => {
-      if (handsRef.current) {
-        handsRef.current.close();
-      }
-      if (document.body.contains(script)) {
-        document.body.removeChild(script);
-      }
       window.speechSynthesis.onvoiceschanged = null;
+      if (gestureRecognizerRef.current) {
+        gestureRecognizerRef.current.close?.();
+      }
     };
   }, [isHydrated]);
 
@@ -119,7 +138,7 @@ export default function TranslationStudioPage() {
       recognitionRef.current = new SpeechRecognition();
       recognitionRef.current.continuous = true;
       recognitionRef.current.interimResults = true;
-      recognitionRef.current.lang = 'en-US';
+      recognitionRef.current.lang = selectedLanguage;
 
       recognitionRef.current.onresult = (event: any) => {
         let interimTranscript = '';
@@ -157,15 +176,16 @@ export default function TranslationStudioPage() {
         recognitionRef.current.stop();
       }
     };
-  }, [isListening, isHydrated]);
+  }, [isListening, isHydrated, selectedLanguage]);
 
   if (!isHydrated) {
     return null;
   }
 
   const convertTextToSign = (text: string) => {
-    // Word to gesture mapping
+    // Word to gesture mapping with Kinyarwanda support
     const wordToGesture: { [key: string]: string } = {
+      // English
       'hello': 'hello',
       'hi': 'hello',
       'thank': 'thank you',
@@ -238,6 +258,57 @@ export default function TranslationStudioPage() {
       'clap': 'clap',
       'rock': 'rock',
       'call': 'call me',
+      // Kinyarwanda
+      'muraho': 'hello',
+      'amakuru': 'hello',
+      'urakoze': 'thank you',
+      'yego': 'yes',
+      'oya': 'no',
+      'ufasha': 'help',
+      'mbabwirinze': 'sorry',
+      'byiza': 'good',
+      'bibi': 'bad',
+      'kunda': 'love',
+      'gura': 'buy',
+      'ugurisha': 'sell',
+      'akazi': 'work',
+      'ishuri': 'school',
+      'umuryango': 'family',
+      'inshuti': 'friend',
+      'ishimwe': 'happy',
+      'agahinda': 'sad',
+      'umatwi': 'hungry',
+      'ejo': 'tomorrow',
+      'ubu': 'now',
+      'hano': 'here',
+      'hukuri': 'there',
+      'genda': 'go',
+      'jya': 'come',
+      'ryama': 'sleep',
+      'fata': 'take',
+      'vuga': 'speak',
+      'umva': 'listen',
+      'tegereza': 'wait',
+      'soma': 'read',
+      'andika': 'write',
+      'bona': 'see',
+      'rima': 'one',
+      'kabiri': 'two',
+      'gatu': 'three',
+      'kane': 'four',
+      'gatanu': 'five',
+      'gatandatu': 'six',
+      'karindwi': 'seven',
+      'munani': 'eight',
+      'icyenda': 'nine',
+      'cumi': 'ten',
+      'amafaranga': 'money',
+      'igice': 'piece',
+      'inzira': 'road',
+      'imodoka': 'car',
+      'igihugu': 'country',
+      'umugozi': 'rope',
+      'isoko': 'market',
     };
 
     // Split text into words and convert to gestures
@@ -292,55 +363,82 @@ export default function TranslationStudioPage() {
       
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        videoRef.current.play();
+        await videoRef.current.play();
         streamRef.current = stream;
         setTranslating(true);
-        
-        // Process frames with MediaPipe
-        const processFrame = async () => {
-          if (videoRef.current && handsRef.current && isCameraOn) {
-            await handsRef.current.send({ image: videoRef.current });
-            requestAnimationFrame(processFrame);
-          }
-        };
-        processFrame();
-        
-        // Call backend API for gesture prediction with actual landmarks
-        intervalRef.current = setInterval(async () => {
-          try {
-            if (landmarksRef.current.length > 0 && !gestureCooldown) {
-              const response = await api.ai.predict({ landmarks: landmarksRef.current });
-              if (response.confidence > 0.7) {
-                // Only update if gesture changed (avoid repeating same gesture)
-                if (response.gesture !== lastGesture) {
-                  setLastGesture(response.gesture);
-                  setGestureHistory(prev => [...prev, response.gesture]);
-                  setCurrentTranslation(response.gesture);
-                  setConfidenceScore(response.confidence);
-                  setConfidence(response.confidence);
 
-                  // Auto-speak if enabled
-                  if (autoSpeak) {
-                    speakText(response.gesture);
+        // Per-frame gesture recognition using MediaPipe Gesture Recognizer
+        let lastVideoTime = -1;
+        const gestureBuffer: string[] = [];
+        const BUFFER_SIZE = 4;
+
+        const processFrame = () => {
+          if (!videoRef.current || !isCameraOn) return;
+
+          const video = videoRef.current;
+          const nowMs = performance.now();
+
+          if (gestureRecognizerReadyRef.current && gestureRecognizerRef.current && video.readyState >= 2) {
+            if (video.currentTime !== lastVideoTime) {
+              lastVideoTime = video.currentTime;
+              try {
+                const results = gestureRecognizerRef.current.recognizeForVideo(video, nowMs);
+
+                if (results?.gestures?.length > 0) {
+                  const topGesture = results.gestures[0][0];
+                  const rawLabel: string = topGesture.categoryName;
+                  const score: number = topGesture.score;
+
+                  // Also capture landmarks for pattern display
+                  if (results.landmarks?.length > 0) {
+                    landmarksRef.current = results.landmarks[0];
                   }
 
-                  // Set cooldown to prevent rapid repeated gestures (reduced for faster response)
-                  setGestureCooldown(true);
-                  cooldownRef.current = setTimeout(() => {
-                    setGestureCooldown(false);
-                  }, 1000);
-                }
-              } else {
-                // Clear lastGesture when confidence drops, allowing gesture to be detected again
-                if (lastGesture) {
+                  if (rawLabel && rawLabel !== 'None' && score > 0.65) {
+                    const label = gestureToKinyarwanda[rawLabel] || rawLabel;
+                    gestureBuffer.push(label);
+                    if (gestureBuffer.length > BUFFER_SIZE) gestureBuffer.shift();
+
+                    // Require 3 of last 4 frames to agree
+                    const counts: Record<string, number> = {};
+                    for (const g of gestureBuffer) counts[g] = (counts[g] || 0) + 1;
+                    const stable = Object.entries(counts).find(([_, c]) => c >= 3);
+
+                    if (stable) {
+                      const stableLabel = stable[0];
+                      setPatternConfidence(score);
+                      setConfidence(score);
+
+                      if (stableLabel !== lastGestureRef.current) {
+                        lastGestureRef.current = stableLabel;
+                        setLastGesture(stableLabel);
+                        setGestureHistory(h => [...h, stableLabel]);
+                        setCurrentTranslation(stableLabel);
+                        setConfidenceScore(score);
+                        if (autoSpeak) speakText(stableLabel);
+                      }
+                    }
+                  } else {
+                    // No confident gesture — clear buffer
+                    gestureBuffer.length = 0;
+                    setPatternConfidence(0);
+                  }
+                } else {
+                  gestureBuffer.length = 0;
+                  setPatternConfidence(0);
+                  lastGestureRef.current = '';
                   setLastGesture('');
                 }
+              } catch (err) {
+                // recognizer not ready yet, ignore
               }
             }
-          } catch (error) {
-            console.error('Error predicting gesture:', error);
           }
-        }, 500);
+
+          animFrameRef.current = requestAnimationFrame(processFrame);
+        };
+
+        animFrameRef.current = requestAnimationFrame(processFrame);
       }
     } catch (error) {
       console.error('Error accessing camera:', error);
@@ -349,6 +447,10 @@ export default function TranslationStudioPage() {
   };
 
   const stopCamera = () => {
+    if (animFrameRef.current) {
+      cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = null;
+    }
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
@@ -369,10 +471,12 @@ export default function TranslationStudioPage() {
       isSpeakingRef.current = false;
     }
     landmarksRef.current = [];
+    lastGestureRef.current = '';
     setGestureHistory([]);
     setLastGesture('');
     setCurrentTranslation('');
     setConfidence(0);
+    setPatternConfidence(0);
     setGestureCooldown(false);
     setTranslating(false);
   };
@@ -402,6 +506,92 @@ export default function TranslationStudioPage() {
     } catch (error) {
       console.error('Error saving translation:', error);
     }
+  };
+
+  // Client-side pattern recognition to validate hand gestures
+  const analyzeHandPattern = (landmarks: any[]): number => {
+    if (!landmarks || landmarks.length < 21) {
+      console.log('Invalid landmarks length:', landmarks?.length);
+      return 0;
+    }
+    
+    // Check if hand is visible and stable
+    const wrist = landmarks[0];
+    const thumbTip = landmarks[4];
+    const indexTip = landmarks[8];
+    const middleTip = landmarks[12];
+    const ringTip = landmarks[16];
+    const pinkyTip = landmarks[20];
+    
+    // Check if all landmarks are within reasonable bounds (0-1)
+    const allValid = landmarks.every(l => 
+      l.x >= 0 && l.x <= 1 && 
+      l.y >= 0 && l.y <= 1 &&
+      l.z >= -1 && l.z <= 1
+    );
+    
+    if (!allValid) {
+      console.log('Landmarks not within valid bounds');
+      return 0;
+    }
+    
+    // Calculate hand spread (distance between fingertips)
+    const fingerTips = [thumbTip, indexTip, middleTip, ringTip, pinkyTip];
+    let totalSpread = 0;
+    for (let i = 0; i < fingerTips.length - 1; i++) {
+      const dx = fingerTips[i].x - fingerTips[i + 1].x;
+      const dy = fingerTips[i].y - fingerTips[i + 1].y;
+      totalSpread += Math.sqrt(dx * dx + dy * dy);
+    }
+    const avgSpread = totalSpread / (fingerTips.length - 1);
+    
+    // Check if hand is in a reasonable position (not too small or too large)
+    const handSize = avgSpread;
+    console.log('Hand size:', handSize);
+    if (handSize < 0.05 || handSize > 0.9) {
+      console.log('Hand size out of range:', handSize);
+      return 0;
+    }
+    
+    // Calculate finger extension patterns
+    const fingerExtensions = [
+      // Thumb extension
+      Math.sqrt(Math.pow(thumbTip.x - landmarks[2].x, 2) + Math.pow(thumbTip.y - landmarks[2].y, 2)),
+      // Index extension
+      Math.sqrt(Math.pow(indexTip.x - landmarks[5].x, 2) + Math.pow(indexTip.y - landmarks[5].y, 2)),
+      // Middle extension
+      Math.sqrt(Math.pow(middleTip.x - landmarks[9].x, 2) + Math.pow(middleTip.y - landmarks[9].y, 2)),
+      // Ring extension
+      Math.sqrt(Math.pow(ringTip.x - landmarks[13].x, 2) + Math.pow(ringTip.y - landmarks[13].y, 2)),
+      // Pinky extension
+      Math.sqrt(Math.pow(pinkyTip.x - landmarks[17].x, 2) + Math.pow(pinkyTip.y - landmarks[17].y, 2)),
+    ];
+    
+    console.log('Finger extensions:', fingerExtensions);
+    
+    // Check if fingers are in a reasonable extension range (more permissive)
+    const validExtensions = fingerExtensions.every(ext => ext > 0.01 && ext < 0.6);
+    if (!validExtensions) {
+      console.log('Finger extensions invalid:', fingerExtensions);
+      return 0;
+    }
+    
+    // Calculate pattern confidence based on hand stability and visibility
+    let confidence = 0.6; // Base confidence - higher since we passed validation
+    
+    // Boost confidence for well-extended fingers
+    const avgExtension = fingerExtensions.reduce((a, b) => a + b, 0) / fingerExtensions.length;
+    if (avgExtension > 0.03 && avgExtension < 0.4) confidence += 0.15;
+    
+    // Boost confidence for reasonable hand spread
+    if (handSize > 0.1 && handSize < 0.6) confidence += 0.15;
+    
+    // Boost confidence if fingertips are distinct (not clustered)
+    const tipVariance = fingerExtensions.reduce((sum, ext) => sum + Math.pow(ext - avgExtension, 2), 0) / fingerExtensions.length;
+    if (tipVariance > 0.0005) confidence += 0.1;
+    
+    console.log('Final pattern confidence:', confidence);
+    return Math.min(confidence, 1.0);
   };
 
   const preprocessText = (text: string): string => {
@@ -572,6 +762,21 @@ export default function TranslationStudioPage() {
                         {Math.round(confidence * 100)}%
                       </span>
                     </div>
+                    {patternConfidence > 0 && (
+                      <div className="flex items-center justify-center gap-2 mt-2">
+                        <span className="text-xs text-slate-500 dark:text-slate-400">Pattern:</span>
+                        <div className="w-full max-w-xs bg-slate-200 dark:bg-slate-700 rounded-full h-1.5">
+                          <motion.div
+                            initial={{ width: 0 }}
+                            animate={{ width: `${patternConfidence * 100}%` }}
+                            className="bg-teal-600 h-1.5 rounded-full"
+                          />
+                        </div>
+                        <span className="text-xs text-slate-500 dark:text-slate-400">
+                          {Math.round(patternConfidence * 100)}%
+                        </span>
+                      </div>
+                    )}
                   </motion.div>
                 ) : (
                   <div className="flex items-center justify-center h-full text-slate-400">
@@ -618,6 +823,15 @@ export default function TranslationStudioPage() {
                     Auto-speak translations
                   </span>
                 </label>
+                <select
+                  value={selectedLanguage}
+                  onChange={(e) => setSelectedLanguage(e.target.value)}
+                  className="px-3 py-1 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="rw-RW">Kinyarwanda</option>
+                  <option value="en-US">English</option>
+                  <option value="fr-FR">French</option>
+                </select>
               </div>
 
               <div className="flex gap-2">

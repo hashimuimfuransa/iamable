@@ -5,6 +5,118 @@ import { AILog, AILogDocument } from './schemas/ai-log.schema';
 import { AITraining, AITrainingDocument } from './schemas/ai-training.schema';
 import { CreateTrainingDto } from './dto/create-training.dto';
 
+// ─── Hand landmark indices (MediaPipe Hands) ────────────────────────────────
+// 0: wrist
+// 1-4: thumb  (CMC, MCP, IP, TIP)
+// 5-8: index  (MCP, PIP, DIP, TIP)
+// 9-12: middle (MCP, PIP, DIP, TIP)
+// 13-16: ring  (MCP, PIP, DIP, TIP)
+// 17-20: pinky (MCP, PIP, DIP, TIP)
+
+interface Landmark { x: number; y: number; z: number; }
+
+interface HandFeatures {
+  // finger extension states
+  thumbUp: boolean;
+  thumbDown: boolean;
+  thumbOut: boolean;         // thumb pointing sideways away from palm
+  indexUp: boolean;
+  middleUp: boolean;
+  ringUp: boolean;
+  pinkyUp: boolean;
+  extCount: number;          // total extended fingers (not thumb)
+  extCountWithThumb: number;
+
+  // curl ratios (1.0 = fully extended, 0 = fully curled)
+  indexCurl: number;
+  middleCurl: number;
+  ringCurl: number;
+  pinkyCurl: number;
+
+  // key distances (normalised by hand size)
+  thumbIndexDist: number;
+  thumbMiddleDist: number;
+  thumbPinkyDist: number;
+  indexMiddleDist: number;
+  middleRingDist: number;
+  ringPinkyDist: number;
+
+  // wrist position in frame (0–1)
+  wx: number;
+  wy: number;
+
+  // palm normal direction (z-component of cross product of two edge vectors)
+  palmFacingCamera: boolean;  // true = palm towards camera, false = back of hand
+
+  handSize: number;            // wrist-to-middle-MCP distance
+}
+
+function dist(a: Landmark, b: Landmark): number {
+  return Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2 + (a.z-b.z)**2);
+}
+
+function extractFeatures(lm: Landmark[]): HandFeatures {
+  const wrist   = lm[0];
+  // thumb
+  const tMCP=lm[1], tIP=lm[2], tPIP=lm[3], tTip=lm[4];
+  // index
+  const iMCP=lm[5], iPIP=lm[6], iDIP=lm[7], iTip=lm[8];
+  // middle
+  const mMCP=lm[9], mPIP=lm[10], mDIP=lm[11], mTip=lm[12];
+  // ring
+  const rMCP=lm[13], rPIP=lm[14], rDIP=lm[15], rTip=lm[16];
+  // pinky
+  const pMCP=lm[17], pPIP=lm[18], pDIP=lm[19], pTip=lm[20];
+
+  const handSize = dist(wrist, mMCP) || 0.001;
+
+  // Extension: tip farther from MCP than pip is from MCP (ratio > 1.3)
+  const fExt = (tip: Landmark, pip: Landmark, mcp: Landmark) =>
+    dist(tip, mcp) / (dist(pip, mcp) + 0.001) > 1.3;
+
+  // Curl ratio: tip-to-mcp / pip-to-mcp  (higher = more extended)
+  const curlRatio = (tip: Landmark, pip: Landmark, mcp: Landmark) =>
+    Math.min(dist(tip, mcp) / (dist(pip, mcp) + 0.001), 2.5);
+
+  const indexUp  = fExt(iTip, iPIP, iMCP);
+  const middleUp = fExt(mTip, mPIP, mMCP);
+  const ringUp   = fExt(rTip, rPIP, rMCP);
+  const pinkyUp  = fExt(pTip, pPIP, pMCP);
+  const extCount = [indexUp, middleUp, ringUp, pinkyUp].filter(Boolean).length;
+
+  // Thumb: compare tip position to knuckle (x-axis for horizontal extension)
+  const thumbOut = dist(tTip, iMCP) > handSize * 1.2;
+  const thumbUp  = thumbOut && tTip.y < tPIP.y;
+  const thumbDown= thumbOut && tTip.y > tPIP.y;
+  const extCountWithThumb = extCount + (thumbOut ? 1 : 0);
+
+  // Palm facing camera: z of tips < z of MCPs means facing towards camera
+  const avgTipZ = (iTip.z + mTip.z + rTip.z + pTip.z) / 4;
+  const avgMcpZ = (iMCP.z + mMCP.z + rMCP.z + pMCP.z) / 4;
+  const palmFacingCamera = avgTipZ < avgMcpZ;
+
+  const nd = (a: Landmark, b: Landmark) => dist(a,b) / handSize;
+
+  return {
+    thumbUp, thumbDown, thumbOut,
+    indexUp, middleUp, ringUp, pinkyUp,
+    extCount, extCountWithThumb,
+    indexCurl:  curlRatio(iTip, iPIP, iMCP),
+    middleCurl: curlRatio(mTip, mPIP, mMCP),
+    ringCurl:   curlRatio(rTip, rPIP, rMCP),
+    pinkyCurl:  curlRatio(pTip, pPIP, pMCP),
+    thumbIndexDist:  nd(tTip, iTip),
+    thumbMiddleDist: nd(tTip, mTip),
+    thumbPinkyDist:  nd(tTip, pTip),
+    indexMiddleDist: nd(iTip, mTip),
+    middleRingDist:  nd(mTip, rTip),
+    ringPinkyDist:   nd(rTip, pTip),
+    wx: wrist.x, wy: wrist.y,
+    palmFacingCamera,
+    handSize,
+  };
+}
+
 @Injectable()
 export class AiService {
   constructor(
@@ -101,443 +213,367 @@ export class AiService {
     };
   }
 
+  // ─── Comprehensive sign recognition engine ───────────────────────────────
+  // Each entry: { match: (f) => boolean, label: string, conf: number }
+  // Evaluated in priority order – first match wins.
+  // Labels are in Kinyarwanda where applicable, otherwise English.
+  // ─────────────────────────────────────────────────────────────────────────
   private classifyGesture(landmarks: any[]): { gesture: string; confidence: number } {
-    // Key landmark indices for MediaPipe Hands:
-    // 0: wrist, 4: thumb tip, 8: index tip, 12: middle tip, 16: ring tip, 20: pinky tip
-    // 2: thumb IP, 3: thumb PIP, 5: index MCP, 6: index PIP, 7: index DIP
-    // 9: middle MCP, 10: middle PIP, 11: middle DIP
-    // 13: ring MCP, 14: ring PIP, 15: ring DIP
-    // 17: pinky MCP, 18: pinky PIP, 19: pinky DIP
-    
-    const wrist = landmarks[0];
-    const thumbTip = landmarks[4];
-    const thumbIP = landmarks[2];
-    const thumbPIP = landmarks[3];
-    const indexTip = landmarks[8];
-    const indexPIP = landmarks[6];
-    const indexMCP = landmarks[5];
-    const middleTip = landmarks[12];
-    const middlePIP = landmarks[10];
-    const middleMCP = landmarks[9];
-    const ringTip = landmarks[16];
-    const ringPIP = landmarks[14];
-    const ringMCP = landmarks[13];
-    const pinkyTip = landmarks[20];
-    const pinkyPIP = landmarks[18];
-    const pinkyMCP = landmarks[17];
+    const f = extractFeatures(landmarks as Landmark[]);
+    const {
+      thumbUp, thumbDown, thumbOut,
+      indexUp, middleUp, ringUp, pinkyUp,
+      extCount, extCountWithThumb,
+      indexCurl, middleCurl, ringCurl, pinkyCurl,
+      thumbIndexDist, thumbMiddleDist, thumbPinkyDist,
+      indexMiddleDist, middleRingDist, ringPinkyDist,
+      wx, wy, palmFacingCamera,
+    } = f;
 
-    // Calculate finger extensions (tip y vs MCP y - lower y means higher in image)
-    const thumbExtended = thumbTip.y < thumbPIP.y;
-    const indexExtended = indexTip.y < indexPIP.y;
-    const middleExtended = middleTip.y < middlePIP.y;
-    const ringExtended = ringTip.y < ringPIP.y;
-    const pinkyExtended = pinkyTip.y < pinkyPIP.y;
+    // ── helpers ──────────────────────────────────────────────────────────
+    const fist      = extCount === 0 && !thumbOut;
+    const openPalm  = extCount === 4 && thumbOut;
+    const only      = (i: boolean, m: boolean, r: boolean, p: boolean, t: boolean) =>
+      indexUp===i && middleUp===m && ringUp===r && pinkyUp===p && thumbOut===t;
 
-    // Count extended fingers
-    const extendedFingers = [thumbExtended, indexExtended, middleExtended, ringExtended, pinkyExtended]
-      .filter(Boolean).length;
+    type Rule = { test: () => boolean; label: string; conf: number };
+    const rules: Rule[] = [
 
-    // Calculate distances between fingertips
-    const thumbIndexDist = this.calculateDistance(thumbTip, indexTip);
-    const thumbMiddleDist = this.calculateDistance(thumbTip, middleTip);
-    const indexMiddleDist = this.calculateDistance(indexTip, middleTip);
-    const middleRingDist = this.calculateDistance(middleTip, ringTip);
-    const ringPinkyDist = this.calculateDistance(ringTip, pinkyTip);
+      // ════════════════════════════════════════════════════════════════════
+      // CORE GREETINGS  (Amashyaka yo gusanganira)
+      // ════════════════════════════════════════════════════════════════════
+      { test: () => openPalm && palmFacingCamera && wy < 0.5,
+        label: 'muraho (hello)',         conf: 0.90 },
+      { test: () => openPalm && !palmFacingCamera && wy < 0.5,
+        label: 'amakuru (how are you)',  conf: 0.85 },
+      { test: () => fist && wy < 0.45 && wx > 0.3 && wx < 0.7,
+        label: 'mwiriwe (good evening)', conf: 0.78 },
+      { test: () => extCount === 2 && indexUp && middleUp && palmFacingCamera && wy < 0.4,
+        label: 'urakoze (thank you)',    conf: 0.87 },
+      { test: () => extCount === 3 && indexUp && middleUp && ringUp && palmFacingCamera,
+        label: 'murabeho (goodbye)',     conf: 0.82 },
+      { test: () => openPalm && wy < 0.35,
+        label: 'bwiriwe (evening)',      conf: 0.72 },
+      { test: () => thumbUp && extCount === 0,
+        label: 'byiza (good)',           conf: 0.90 },
+      { test: () => thumbDown && extCount === 0,
+        label: 'bibi (bad)',             conf: 0.88 },
 
-    // Gesture classification logic
-    let gesture = 'unknown';
-    let confidence = 0.5;
+      // ════════════════════════════════════════════════════════════════════
+      // AFFIRMATIONS / NEGATIONS
+      // ════════════════════════════════════════════════════════════════════
+      { test: () => only(true,false,false,false,false) && wy < 0.5,
+        label: 'yego (yes)',             conf: 0.88 },
+      { test: () => fist && !thumbOut,
+        label: 'oya (no)',               conf: 0.90 },
+      { test: () => only(true,false,false,false,true) && thumbIndexDist > 1.2,
+        label: 'kumva (understand)',     conf: 0.80 },
+      { test: () => openPalm && wy > 0.6,
+        label: 'tangira (stop/start)',   conf: 0.75 },
 
-    // Open palm (all fingers extended) - "Hello" or "Stop"
-    if (extendedFingers === 5) {
-      gesture = 'hello';
-      confidence = 0.85;
-    }
-    // Fist (no fingers extended) - "No" or "Hold"
-    else if (extendedFingers === 0) {
-      gesture = 'no';
-      confidence = 0.9;
-    }
-    // Pointing (only index extended) - "Yes" or "Look"
-    else if (extendedFingers === 1 && indexExtended) {
-      gesture = 'yes';
-      confidence = 0.88;
-    }
-    // Peace sign (index and middle extended) - "Peace" or "Victory"
-    else if (extendedFingers === 2 && indexExtended && middleExtended) {
-      gesture = 'thank you';
-      confidence = 0.87;
-    }
-    // Three fingers (index, middle, ring) - "Three" or "OK"
-    else if (extendedFingers === 3 && indexExtended && middleExtended && ringExtended) {
-      gesture = 'please';
-      confidence = 0.82;
-    }
-    // Four fingers (all except thumb) - "Four"
-    else if (extendedFingers === 4 && !thumbExtended) {
-      gesture = 'four';
-      confidence = 0.85;
-    }
-    // Thumbs up (thumb extended, others closed)
-    else if (thumbExtended && !indexExtended && !middleExtended && !ringExtended && !pinkyExtended) {
-      gesture = 'good';
-      confidence = 0.9;
-    }
-    // Thumbs down (thumb pointing down, others closed)
-    else if (!thumbExtended && !indexExtended && !middleExtended && !ringExtended && !pinkyExtended && thumbTip.y > thumbPIP.y) {
-      gesture = 'bad';
-      confidence = 0.88;
-    }
-    // OK sign (thumb and index forming circle)
-    else if (thumbIndexDist < 0.05 && !middleExtended && !ringExtended && !pinkyExtended) {
-      gesture = 'love';
-      confidence = 0.85;
-    }
-    // Help gesture (open palm with specific orientation)
-    else if (extendedFingers >= 4 && wrist.y > 0.6) {
-      gesture = 'help';
-      confidence = 0.75;
-    }
-    // Sorry gesture (hand over chest area)
-    else if (extendedFingers >= 3 && wrist.y > 0.5 && wrist.x > 0.3 && wrist.x < 0.7) {
-      gesture = 'sorry';
-      confidence = 0.7;
-    }
-    // Call me (thumb and pinky extended, others closed)
-    else if (thumbExtended && pinkyExtended && !indexExtended && !middleExtended && !ringExtended) {
-      gesture = 'call me';
-      confidence = 0.85;
-    }
-    // Rock on (index and pinky extended, others closed)
-    else if (indexExtended && pinkyExtended && !thumbExtended && !middleExtended && !ringExtended) {
-      gesture = 'rock';
-      confidence = 0.85;
-    }
-    // Fist with thumb on side (stop gesture)
-    else if (extendedFingers === 0 && thumbTip.x < indexMCP.x) {
-      gesture = 'stop';
-      confidence = 0.88;
-    }
-    // Wave (open palm, hand on side)
-    else if (extendedFingers === 5 && wrist.x < 0.3) {
-      gesture = 'wave';
-      confidence = 0.8;
-    }
-    // Clap preparation (both hands - simulated with palm facing)
-    else if (extendedFingers === 5 && wrist.y < 0.3) {
-      gesture = 'clap';
-      confidence = 0.75;
-    }
-    // One (index finger only, thumb tucked)
-    else if (indexExtended && !middleExtended && !ringExtended && !pinkyExtended && !thumbExtended) {
-      gesture = 'one';
-      confidence = 0.88;
-    }
-    // Two (index and middle, thumb tucked)
-    else if (indexExtended && middleExtended && !ringExtended && !pinkyExtended && !thumbExtended) {
-      gesture = 'two';
-      confidence = 0.87;
-    }
-    // Three (index, middle, ring, thumb tucked)
-    else if (indexExtended && middleExtended && ringExtended && !pinkyExtended && !thumbExtended) {
-      gesture = 'three';
-      confidence = 0.85;
-    }
-    // Five (all fingers spread)
-    else if (extendedFingers === 5 && indexMiddleDist > 0.1 && middleRingDist > 0.1 && ringPinkyDist > 0.1) {
-      gesture = 'five';
-      confidence = 0.85;
-    }
-    // Six (thumb and pinky touching, others extended)
-    else if (thumbIndexDist > 0.1 && indexExtended && middleExtended && ringExtended && pinkyExtended) {
-      gesture = 'six';
-      confidence = 0.8;
-    }
-    // Seven (all fingers except index and middle)
-    else if (thumbExtended && !indexExtended && !middleExtended && ringExtended && pinkyExtended) {
-      gesture = 'seven';
-      confidence = 0.78;
-    }
-    // Eight (all fingers except index)
-    else if (thumbExtended && !indexExtended && middleExtended && ringExtended && pinkyExtended) {
-      gesture = 'eight';
-      confidence = 0.78;
-    }
-    // Nine (all fingers except pinky)
-    else if (thumbExtended && indexExtended && middleExtended && ringExtended && !pinkyExtended) {
-      gesture = 'nine';
-      confidence = 0.78;
-    }
-    // Ten (both hands - simulated with two extended fingers crossing)
-    else if (indexExtended && middleExtended && indexMiddleDist < 0.05) {
-      gesture = 'ten';
-      confidence = 0.75;
-    }
-    // Shh (index finger over lips - simulated with index extended near face)
-    else if (indexExtended && !middleExtended && !ringExtended && !pinkyExtended && wrist.y < 0.4) {
-      gesture = 'quiet';
-      confidence = 0.75;
-    }
-    // High five (open palm raised)
-    else if (extendedFingers === 5 && wrist.y < 0.3) {
-      gesture = 'high five';
-      confidence = 0.8;
-    }
-    // Fist bump (fist, hand forward)
-    else if (extendedFingers === 0 && wrist.y < 0.5) {
-      gesture = 'fist bump';
-      confidence = 0.8;
-    }
-    // Thumbs up variation (good job)
-    else if (thumbExtended && !indexExtended && !middleExtended && !ringExtended && !pinkyExtended && thumbTip.y < wrist.y) {
-      gesture = 'good job';
-      confidence = 0.88;
-    }
-    // Applause (open palms)
-    else if (extendedFingers === 5 && wrist.x > 0.7) {
-      gesture = 'applause';
-      confidence = 0.75;
-    }
-    // Come here (index finger beckoning)
-    else if (indexExtended && !middleExtended && !ringExtended && !pinkyExtended && wrist.x > 0.5) {
-      gesture = 'come here';
-      confidence = 0.78;
-    }
-    // Go away (pushing motion - open palm facing away)
-    else if (extendedFingers === 5 && wrist.y > 0.4 && wrist.x < 0.2) {
-      gesture = 'go away';
-      confidence = 0.75;
-    }
-    // I don't know (shoulders shrug - open hands at shoulder level)
-    else if (extendedFingers >= 3 && wrist.y > 0.4 && wrist.y < 0.6) {
-      gesture = "I don't know";
-      confidence = 0.7;
-    }
-    // Thinking (hand on chin)
-    else if (extendedFingers >= 2 && wrist.y > 0.5 && wrist.x > 0.5) {
-      gesture = 'thinking';
-      confidence = 0.7;
-    }
-    // Time (tapping wrist - simulated with hand near wrist area)
-    else if (extendedFingers === 2 && wrist.y > 0.6 && wrist.x < 0.3) {
-      gesture = 'time';
-      confidence = 0.7;
-    }
-    // Money (rubbing fingers - simulated with thumb and index rubbing)
-    else if (thumbIndexDist < 0.08 && thumbIndexDist > 0.03 && !middleExtended && !ringExtended && !pinkyExtended) {
-      gesture = 'money';
-      confidence = 0.75;
-    }
-    // Eat (hand near mouth)
-    else if (extendedFingers >= 3 && wrist.y < 0.4 && wrist.x > 0.4 && wrist.x < 0.6) {
-      gesture = 'eat';
-      confidence = 0.7;
-    }
-    // Drink (hand near mouth with fingers curled)
-    else if (extendedFingers <= 2 && wrist.y < 0.4 && wrist.x > 0.4 && wrist.x < 0.6) {
-      gesture = 'drink';
-      confidence = 0.7;
-    }
-    // Sleep (hand on head)
-    else if (extendedFingers >= 3 && wrist.y < 0.3) {
-      gesture = 'sleep';
-      confidence = 0.7;
-    }
-    // Listen (hand near ear)
-    else if (extendedFingers >= 3 && wrist.x > 0.7 && wrist.y > 0.3 && wrist.y < 0.5) {
-      gesture = 'listen';
-      confidence = 0.7;
-    }
-    // Look (hand near eyes)
-    else if (extendedFingers >= 2 && wrist.y < 0.3 && wrist.x > 0.3 && wrist.x < 0.7) {
-      gesture = 'look';
-      confidence = 0.7;
-    }
-    // Walk (two fingers walking motion - simulated with index and middle)
-    else if (indexExtended && middleExtended && !ringExtended && !pinkyExtended && !thumbExtended) {
-      gesture = 'walk';
-      confidence = 0.75;
-    }
-    // Run (similar to walk but faster - same gesture for now)
-    else if (indexExtended && middleExtended && !ringExtended && !pinkyExtended && !thumbExtended && wrist.y < 0.4) {
-      gesture = 'run';
-      confidence = 0.72;
-    }
-    // Sit (hand pushing down)
-    else if (extendedFingers === 5 && wrist.y > 0.6) {
-      gesture = 'sit';
-      confidence = 0.75;
-    }
-    // Stand (hand pointing up)
-    else if (extendedFingers === 1 && indexExtended && wrist.y < 0.3) {
-      gesture = 'stand';
-      confidence = 0.75;
-    }
-    // Stop (open palm facing forward)
-    else if (extendedFingers === 5 && wrist.x < 0.2) {
-      gesture = 'stop';
-      confidence = 0.85;
-    }
-    // Buy (hand motion like giving money - thumb and index pinching)
-    else if (thumbIndexDist < 0.08 && thumbIndexDist > 0.04 && middleExtended && ringExtended && pinkyExtended) {
-      gesture = 'buy';
-      confidence = 0.78;
-    }
-    // Sell (hand motion like taking money - open palm with thumb tucked)
-    else if (extendedFingers === 4 && !thumbExtended && wrist.y > 0.4) {
-      gesture = 'sell';
-      confidence = 0.75;
-    }
-    // Shop (bag holding gesture - fingers curled)
-    else if (extendedFingers <= 2 && wrist.y > 0.4 && wrist.x > 0.3 && wrist.x < 0.7) {
-      gesture = 'shop';
-      confidence = 0.75;
-    }
-    // Work (fist with thumb on top)
-    else if (extendedFingers === 0 && thumbTip.y < thumbPIP.y) {
-      gesture = 'work';
-      confidence = 0.78;
-    }
-    // Home (roof shape - index and middle forming V)
-    else if (indexExtended && middleExtended && indexMiddleDist > 0.08 && indexMiddleDist < 0.15 && !ringExtended && !pinkyExtended) {
-      gesture = 'home';
-      confidence = 0.8;
-    }
-    // School (book opening - two hands simulated with palm open)
-    else if (extendedFingers === 5 && wrist.y > 0.5 && wrist.x > 0.4 && wrist.x < 0.6) {
-      gesture = 'school';
-      confidence = 0.75;
-    }
-    // Family (circle motion - thumb and index forming circle)
-    else if (thumbIndexDist < 0.06 && indexExtended && middleExtended && ringExtended && pinkyExtended) {
-      gesture = 'family';
-      confidence = 0.75;
-    }
-    // Friend (handshake motion - open palm extended)
-    else if (extendedFingers === 5 && wrist.y < 0.5 && wrist.x > 0.5) {
-      gesture = 'friend';
-      confidence = 0.75;
-    }
-    // Happy (smile gesture - index and middle curved)
-    else if (indexExtended && middleExtended && indexTip.y > indexPIP.y && middleTip.y > middlePIP.y) {
-      gesture = 'happy';
-      confidence = 0.72;
-    }
-    // Sad (frown gesture - fingers drooping)
-    else if (indexExtended && middleExtended && indexTip.y > wrist.y && middleTip.y > wrist.y) {
-      gesture = 'sad';
-      confidence = 0.7;
-    }
-    // Angry (fist with thumb across)
-    else if (extendedFingers === 0 && thumbTip.x > indexMCP.x) {
-      gesture = 'angry';
-      confidence = 0.75;
-    }
-    // Tired (hand on head - palm on forehead)
-    else if (extendedFingers >= 3 && wrist.y < 0.3 && wrist.x > 0.3 && wrist.x < 0.7) {
-      gesture = 'tired';
-      confidence = 0.7;
-    }
-    // Hungry (hand on stomach)
-    else if (extendedFingers >= 3 && wrist.y > 0.5 && wrist.x > 0.4 && wrist.x < 0.6) {
-      gesture = 'hungry';
-      confidence = 0.72;
-    }
-    // Thirsty (hand near throat)
-    else if (extendedFingers >= 2 && wrist.y > 0.4 && wrist.y < 0.5 && wrist.x > 0.4 && wrist.x < 0.6) {
-      gesture = 'thirsty';
-      confidence = 0.7;
-    }
-    // Cold (hugging self - arms crossed simulated)
-    else if (extendedFingers <= 2 && wrist.y > 0.5 && wrist.x < 0.3) {
-      gesture = 'cold';
-      confidence = 0.7;
-    }
-    // Hot (wiping brow - hand near forehead)
-    else if (extendedFingers >= 3 && wrist.y < 0.3 && wrist.x > 0.3 && wrist.x < 0.7) {
-      gesture = 'hot';
-      confidence = 0.7;
-    }
-    // Phone (hand to ear - pinky and thumb extended)
-    else if (thumbExtended && pinkyExtended && !indexExtended && !middleExtended && !ringExtended && wrist.x > 0.6) {
-      gesture = 'phone';
-      confidence = 0.8;
-    }
-    // Email (typing motion - fingers moving)
-    else if (indexExtended && middleExtended && !ringExtended && !pinkyExtended && !thumbExtended && wrist.y > 0.5) {
-      gesture = 'email';
-      confidence = 0.72;
-    }
-    // Internet (web motion - hands forming network)
-    else if (extendedFingers === 5 && wrist.y > 0.4 && wrist.x > 0.2 && wrist.x < 0.8) {
-      gesture = 'internet';
-      confidence = 0.7;
-    }
-    // Computer (keyboard typing - fingers on surface)
-    else if (indexExtended && middleExtended && ringExtended && !pinkyExtended && !thumbExtended && wrist.y > 0.5) {
-      gesture = 'computer';
-      confidence = 0.72;
-    }
-    // Car (steering wheel motion - hands gripping)
-    else if (extendedFingers <= 2 && wrist.y > 0.4 && wrist.x > 0.3 && wrist.x < 0.7) {
-      gesture = 'car';
-      confidence = 0.7;
-    }
-    // Bus (large vehicle - open palm motion)
-    else if (extendedFingers === 5 && wrist.y > 0.4 && wrist.x < 0.3) {
-      gesture = 'bus';
-      confidence = 0.7;
-    }
-    // Train (tracks motion - index and middle parallel)
-    else if (indexExtended && middleExtended && indexMiddleDist < 0.05 && !ringExtended && !pinkyExtended && !thumbExtended) {
-      gesture = 'train';
-      confidence = 0.75;
-    }
-    // Airplane (flying motion - arms spread)
-    else if (extendedFingers === 5 && wrist.y < 0.3 && wrist.x > 0.2 && wrist.x < 0.8) {
-      gesture = 'airplane';
-      confidence = 0.7;
-    }
-    // Doctor (stethoscope - hand to chest)
-    else if (extendedFingers >= 3 && wrist.y > 0.5 && wrist.x > 0.4 && wrist.x < 0.6) {
-      gesture = 'doctor';
-      confidence = 0.7;
-    }
-    // Hospital (cross motion - hands forming cross)
-    else if (indexExtended && middleExtended && indexMiddleDist > 0.1 && !ringExtended && !pinkyExtended && !thumbExtended) {
-      gesture = 'hospital';
-      confidence = 0.7;
-    }
-    // Medicine (pill taking - fingers to mouth)
-    else if (extendedFingers <= 2 && wrist.y < 0.4 && wrist.x > 0.4 && wrist.x < 0.6) {
-      gesture = 'medicine';
-      confidence = 0.7;
-    }
-    // Pain (hand on painful area)
-    else if (extendedFingers >= 3 && wrist.y > 0.4 && wrist.x > 0.3 && wrist.x < 0.7) {
-      gesture = 'pain';
-      confidence = 0.7;
-    }
-    // Better (improvement - thumbs up)
-    else if (thumbExtended && !indexExtended && !middleExtended && !ringExtended && !pinkyExtended && thumbTip.y < wrist.y) {
-      gesture = 'better';
-      confidence = 0.85;
-    }
-    // Worse (decline - thumbs down)
-    else if (!thumbExtended && !indexExtended && !middleExtended && !ringExtended && !pinkyExtended && thumbTip.y > thumbPIP.y) {
-      gesture = 'worse';
-      confidence = 0.85;
+      // ════════════════════════════════════════════════════════════════════
+      // NUMBERS  (Imibare)
+      // ════════════════════════════════════════════════════════════════════
+      { test: () => only(true,false,false,false,false),
+        label: 'rimwe (one)',            conf: 0.90 },
+      { test: () => only(true,true,false,false,false) && indexMiddleDist < 0.6,
+        label: 'kabiri (two)',           conf: 0.88 },
+      { test: () => only(true,true,true,false,false),
+        label: 'gatatu (three)',         conf: 0.86 },
+      { test: () => extCount === 4 && !thumbOut,
+        label: 'kane (four)',            conf: 0.85 },
+      { test: () => openPalm && indexMiddleDist > 0.5 && middleRingDist > 0.5,
+        label: 'gatanu (five)',          conf: 0.85 },
+      { test: () => thumbOut && !indexUp && !middleUp && !ringUp && !pinkyUp && wy < 0.5,
+        label: 'gatandatu (six)',        conf: 0.80 },
+      { test: () => only(false,false,false,false,true) && thumbOut,
+        label: 'karindwi (seven)',       conf: 0.80 },
+      { test: () => only(false,true,true,true,false) && !thumbOut,
+        label: 'umunani (eight)',        conf: 0.78 },
+      { test: () => only(true,true,true,true,false) && !thumbOut,
+        label: 'icyenda (nine)',         conf: 0.78 },
+      { test: () => thumbIndexDist < 0.5 && extCount === 0,
+        label: 'icumi (ten)',            conf: 0.82 },
+      { test: () => thumbIndexDist < 0.5 && only(false,true,false,false,false),
+        label: 'cumi na rimwe (eleven)', conf: 0.76 },
+      { test: () => thumbIndexDist < 0.5 && only(false,true,true,false,false),
+        label: 'cumi na kabiri (twelve)',conf: 0.75 },
+
+      // ════════════════════════════════════════════════════════════════════
+      // PEOPLE / FAMILY  (Abantu / Umuryango)
+      // ════════════════════════════════════════════════════════════════════
+      { test: () => only(true,false,false,true,false) && wy < 0.5,
+        label: 'umuryango (family)',     conf: 0.82 },
+      { test: () => openPalm && wx > 0.55 && wy < 0.5,
+        label: 'inshuti (friend)',       conf: 0.78 },
+      { test: () => only(true,true,false,false,false) && indexMiddleDist > 0.7,
+        label: 'umukunzi (lover)',       conf: 0.78 },
+      { test: () => only(false,false,false,false,true) && thumbPinkyDist < 0.5,
+        label: 'data (father)',          conf: 0.76 },
+      { test: () => openPalm && wy > 0.55 && wx > 0.3 && wx < 0.7,
+        label: 'mama (mother)',          conf: 0.76 },
+      { test: () => only(true,false,false,false,false) && wy < 0.3,
+        label: 'umuhungu (son)',         conf: 0.74 },
+      { test: () => only(false,true,false,false,false) && wy < 0.3,
+        label: 'umukobwa (daughter)',    conf: 0.74 },
+      { test: () => extCount === 3 && ringUp && middleUp && indexUp && wy < 0.35,
+        label: 'umwana (child)',         conf: 0.75 },
+      { test: () => fist && wx > 0.6 && wy > 0.35,
+        label: 'mucye (brother/sister)', conf: 0.70 },
+
+      // ════════════════════════════════════════════════════════════════════
+      // EMOTIONS  (Ibyiyumvo)
+      // ════════════════════════════════════════════════════════════════════
+      { test: () => openPalm && palmFacingCamera && wy > 0.5 && wx > 0.3 && wx < 0.7,
+        label: 'ishimwe (happy)',        conf: 0.80 },
+      { test: () => fist && wy > 0.55,
+        label: 'agahinda (sad)',         conf: 0.78 },
+      { test: () => extCount === 1 && indexUp && wy < 0.4 && wx < 0.4,
+        label: 'uburakari (angry)',      conf: 0.75 },
+      { test: () => extCount === 0 && thumbOut && wy < 0.35,
+        label: 'gutinya (fear)',         conf: 0.74 },
+      { test: () => only(true,true,true,false,false) && wy > 0.5,
+        label: 'kunezezwa (joy)',        conf: 0.74 },
+      { test: () => thumbOut && extCount === 4 && wy > 0.55,
+        label: 'gutuza (calm)',          conf: 0.72 },
+      { test: () => fist && wx > 0.3 && wx < 0.7 && wy < 0.4,
+        label: 'gutinda (tired)',        conf: 0.72 },
+      { test: () => openPalm && wy > 0.6 && palmFacingCamera,
+        label: 'kunyura (satisfied)',    conf: 0.70 },
+
+      // ════════════════════════════════════════════════════════════════════
+      // BASIC ACTIONS  (Ibikorwa)
+      // ════════════════════════════════════════════════════════════════════
+      { test: () => extCount === 2 && indexUp && middleUp && wy > 0.55,
+        label: 'gufata (take)',          conf: 0.78 },
+      { test: () => thumbOut && extCount === 4 && palmFacingCamera && wy < 0.45,
+        label: 'gutanga (give)',         conf: 0.78 },
+      { test: () => extCount === 1 && indexUp && wx > 0.6,
+        label: 'kugaruka (come here)',   conf: 0.78 },
+      { test: () => openPalm && !palmFacingCamera && wy > 0.4 && wx < 0.3,
+        label: 'genda (go)',             conf: 0.76 },
+      { test: () => extCount === 2 && indexUp && middleUp && wy > 0.6,
+        label: 'kugenda (walk)',         conf: 0.75 },
+      { test: () => extCount === 2 && indexUp && middleUp && wy < 0.4,
+        label: 'gutura (run)',           conf: 0.74 },
+      { test: () => openPalm && wy < 0.35 && wx > 0.3 && wx < 0.7,
+        label: 'kubyuka (stand up)',     conf: 0.75 },
+      { test: () => openPalm && wy > 0.65,
+        label: 'kwicara (sit)',          conf: 0.75 },
+      { test: () => only(true,false,false,false,false) && wy < 0.3,
+        label: 'kujya hejuru (up)',      conf: 0.76 },
+      { test: () => thumbDown && extCount === 0 && wy > 0.55,
+        label: 'kujya hasi (down)',      conf: 0.76 },
+      { test: () => fist && wy < 0.45 && wx < 0.25,
+        label: 'gusunika (push)',        conf: 0.73 },
+      { test: () => fist && wy < 0.45 && wx > 0.75,
+        label: 'gukurura (pull)',        conf: 0.73 },
+      { test: () => extCount === 3 && indexUp && middleUp && ringUp && wy < 0.45,
+        label: 'gutega amatwi (listen)', conf: 0.74 },
+      { test: () => extCount === 2 && indexUp && middleUp && thumbOut && wy < 0.35,
+        label: 'kureba (look)',          conf: 0.74 },
+      { test: () => only(false,false,false,false,true) && thumbOut && wy < 0.45 && wx > 0.6,
+        label: 'gutumanahana (phone)',   conf: 0.80 },
+      { test: () => openPalm && !palmFacingCamera && wy < 0.4 && wx > 0.3 && wx < 0.7,
+        label: 'kwandika (write)',       conf: 0.74 },
+      { test: () => extCount === 3 && middleUp && ringUp && pinkyUp && wy < 0.45,
+        label: 'gusoma (read)',          conf: 0.74 },
+      { test: () => extCount === 0 && thumbOut && wy > 0.5 && wx > 0.3 && wx < 0.7,
+        label: 'kuryama (sleep)',        conf: 0.75 },
+      { test: () => extCount >= 3 && wy < 0.4 && wx > 0.4 && wx < 0.6,
+        label: 'kurya (eat)',            conf: 0.74 },
+      { test: () => fist && wy < 0.4 && wx > 0.4 && wx < 0.6,
+        label: 'kunywa (drink)',         conf: 0.75 },
+      { test: () => extCount === 1 && indexUp && !middleUp && wy < 0.35,
+        label: 'gusabira (pray)',        conf: 0.72 },
+      { test: () => extCount === 0 && !thumbOut && wy > 0.5 && wx < 0.35,
+        label: 'kubabara (suffer)',      conf: 0.70 },
+
+      // ════════════════════════════════════════════════════════════════════
+      // PLACES / THINGS  (Ibibanza / Ibintu)
+      // ════════════════════════════════════════════════════════════════════
+      { test: () => extCount === 2 && indexUp && middleUp && indexMiddleDist > 0.65 && wy < 0.45,
+        label: 'inzu (home)',            conf: 0.80 },
+      { test: () => extCount === 4 && !thumbOut && wy > 0.5 && wx > 0.4 && wx < 0.6,
+        label: 'ishuri (school)',        conf: 0.76 },
+      { test: () => openPalm && wy > 0.5 && wx > 0.4 && wx < 0.6,
+        label: 'isoko (market)',         conf: 0.74 },
+      { test: () => fist && wy > 0.45 && wx > 0.25 && wx < 0.35,
+        label: 'imodoka (car)',          conf: 0.74 },
+      { test: () => extCount === 4 && !thumbOut && wy > 0.4 && wx < 0.3,
+        label: 'bisi (bus)',             conf: 0.72 },
+      { test: () => extCount === 2 && indexUp && middleUp && indexMiddleDist < 0.4,
+        label: 'inzira y\'ishyiga (train)', conf: 0.74 },
+      { test: () => extCount === 4 && thumbOut && wy < 0.3 && wx > 0.2 && wx < 0.8,
+        label: 'indege (airplane)',      conf: 0.74 },
+      { test: () => extCount === 3 && indexUp && middleUp && ringUp && wy > 0.55 && wx > 0.4 && wx < 0.6,
+        label: 'ibitaro (hospital)',     conf: 0.74 },
+      { test: () => extCount === 1 && middleUp && wy > 0.5 && wx > 0.4 && wx < 0.6,
+        label: 'iduka (shop)',           conf: 0.72 },
+      { test: () => extCount === 3 && wy > 0.55,
+        label: 'urugo (village)',        conf: 0.70 },
+      { test: () => extCount === 2 && indexUp && pinkyUp && !middleUp,
+        label: 'amafaranga (money)',     conf: 0.76 },
+      { test: () => thumbIndexDist < 0.6 && thumbIndexDist > 0.3 && extCount === 0,
+        label: 'amafaranga (money)',     conf: 0.74 },
+
+      // ════════════════════════════════════════════════════════════════════
+      // HEALTH  (Ubuzima)
+      // ════════════════════════════════════════════════════════════════════
+      { test: () => extCount >= 3 && wy > 0.5 && wx > 0.35 && wx < 0.65,
+        label: 'umuganga (doctor)',      conf: 0.72 },
+      { test: () => extCount <= 1 && wy < 0.4 && wx > 0.4 && wx < 0.6,
+        label: 'imiti (medicine)',       conf: 0.72 },
+      { test: () => extCount >= 2 && wy > 0.4 && wx > 0.3 && wx < 0.7 && wy < 0.6,
+        label: 'kubabara (pain)',        conf: 0.70 },
+      { test: () => thumbUp && extCount === 0 && wy < 0.4,
+        label: 'gukira (get better)',    conf: 0.86 },
+      { test: () => thumbDown && extCount === 0 && wy > 0.5,
+        label: 'kurwara (sick/worse)',   conf: 0.84 },
+      { test: () => fist && wy > 0.5 && wx > 0.4 && wx < 0.6,
+        label: 'gutuza (calm down)',     conf: 0.72 },
+      { test: () => extCount >= 2 && wy < 0.35 && wx > 0.4 && wx < 0.6,
+        label: 'kumara ibyago (help emergency)', conf: 0.74 },
+
+      // ════════════════════════════════════════════════════════════════════
+      // FOOD / DRINK  (Ibiryo)
+      // ════════════════════════════════════════════════════════════════════
+      { test: () => fist && wy < 0.45 && wx > 0.4 && wx < 0.6 && palmFacingCamera,
+        label: 'amazi (water)',          conf: 0.76 },
+      { test: () => extCount === 2 && indexUp && thumbOut && wy < 0.45,
+        label: 'inzoga (drink/beverage)',conf: 0.73 },
+      { test: () => extCount >= 3 && wy < 0.45 && wx > 0.4 && wx < 0.6,
+        label: 'ibiribwa (food)',        conf: 0.73 },
+      { test: () => fist && wy > 0.5 && wx > 0.4 && wx < 0.6,
+        label: 'inzara (hunger)',        conf: 0.74 },
+      { test: () => extCount <= 1 && wy < 0.45 && wx > 0.4 && wx < 0.6,
+        label: 'inyota (thirst)',        conf: 0.73 },
+      { test: () => extCount === 3 && wy > 0.55,
+        label: 'amabere (milk)',         conf: 0.70 },
+      { test: () => fist && wy < 0.35 && wx > 0.4 && wx < 0.6,
+        label: 'kawayi (coffee)',        conf: 0.70 },
+
+      // ════════════════════════════════════════════════════════════════════
+      // WEATHER / ENVIRONMENT  (Ikirere)
+      // ════════════════════════════════════════════════════════════════════
+      { test: () => extCount <= 2 && wy > 0.5 && wx < 0.3,
+        label: 'ukonje (cold)',          conf: 0.72 },
+      { test: () => extCount >= 3 && wy < 0.3 && wx > 0.3 && wx < 0.7,
+        label: 'ubushyuhe (hot)',        conf: 0.72 },
+      { test: () => openPalm && wy < 0.4 && wx > 0.1 && wx < 0.5,
+        label: 'imvura (rain)',          conf: 0.70 },
+      { test: () => openPalm && wy < 0.3 && wx > 0.5,
+        label: 'izuba (sun)',            conf: 0.70 },
+
+      // ════════════════════════════════════════════════════════════════════
+      // TIME  (Igihe)
+      // ════════════════════════════════════════════════════════════════════
+      { test: () => extCount === 2 && indexUp && middleUp && wy > 0.6 && wx < 0.3,
+        label: 'igihe (time)',           conf: 0.72 },
+      { test: () => only(true,false,false,false,false) && wy > 0.55,
+        label: 'ubu (now)',              conf: 0.74 },
+      { test: () => extCount === 2 && indexUp && thumbOut && wy > 0.5,
+        label: 'ejo (tomorrow/yesterday)', conf: 0.73 },
+      { test: () => extCount === 3 && indexUp && middleUp && ringUp && wy > 0.5,
+        label: 'icyumweru (week)',       conf: 0.72 },
+      { test: () => extCount === 4 && thumbOut && wy > 0.5,
+        label: 'ukwezi (month)',         conf: 0.72 },
+      { test: () => openPalm && wy > 0.5 && wx < 0.25,
+        label: 'umwaka (year)',          conf: 0.70 },
+
+      // ════════════════════════════════════════════════════════════════════
+      // COMMUNICATION  (Itumanaho)
+      // ════════════════════════════════════════════════════════════════════
+      { test: () => only(false,false,false,false,true) && thumbOut && wx > 0.6,
+        label: 'telefoni (phone)',       conf: 0.82 },
+      { test: () => extCount === 2 && indexUp && middleUp && wy > 0.5,
+        label: 'imeyili (email)',        conf: 0.74 },
+      { test: () => openPalm && wy > 0.4 && wx > 0.2 && wx < 0.8,
+        label: 'interineti (internet)',  conf: 0.72 },
+      { test: () => extCount === 3 && middleUp && ringUp && indexUp && wy > 0.5,
+        label: 'mudasobwa (computer)',   conf: 0.74 },
+      { test: () => extCount === 1 && indexUp && wy < 0.4 && !thumbOut,
+        label: 'gutuza (quiet/silence)', conf: 0.76 },
+      { test: () => extCount >= 3 && wy < 0.45 && wx > 0.35 && wx < 0.65 && !palmFacingCamera,
+        label: 'kwandika (write)',       conf: 0.72 },
+
+      // ════════════════════════════════════════════════════════════════════
+      // COLOURS  (Amabara)
+      // ════════════════════════════════════════════════════════════════════
+      { test: () => only(true,false,false,false,true) && thumbIndexDist > 1.0,
+        label: 'umutuku (red)',          conf: 0.74 },
+      { test: () => only(false,true,true,false,false) && middleRingDist < 0.4,
+        label: 'icyatsi (green)',        conf: 0.72 },
+      { test: () => only(false,false,true,false,false),
+        label: 'ubururu (blue)',         conf: 0.72 },
+      { test: () => only(false,true,false,true,false),
+        label: 'umuhondo (yellow)',      conf: 0.72 },
+      { test: () => fist && thumbOut && thumbUp && wy > 0.35,
+        label: 'uturabyo (white)',       conf: 0.70 },
+      { test: () => fist && !thumbOut,
+        label: 'umukara (black)',        conf: 0.68 },
+
+      // ════════════════════════════════════════════════════════════════════
+      // DIRECTIONS  (Inzira)
+      // ════════════════════════════════════════════════════════════════════
+      { test: () => only(true,false,false,false,false) && wx < 0.35,
+        label: 'ibumoso (left)',         conf: 0.80 },
+      { test: () => only(true,false,false,false,false) && wx > 0.65,
+        label: 'iburyo (right)',         conf: 0.80 },
+      { test: () => only(true,false,false,false,false) && wy < 0.3,
+        label: 'hejuru (up)',            conf: 0.80 },
+      { test: () => only(true,false,false,false,false) && wy > 0.65,
+        label: 'hasi (down)',            conf: 0.80 },
+      { test: () => openPalm && !palmFacingCamera && wy > 0.4 && wx > 0.4 && wx < 0.6,
+        label: 'imbere (forward)',       conf: 0.75 },
+      { test: () => openPalm && palmFacingCamera && wy > 0.4 && wx > 0.4 && wx < 0.6,
+        label: 'inyuma (backward/stop)', conf: 0.75 },
+
+      // ════════════════════════════════════════════════════════════════════
+      // SCHOOL / LEARNING  (Ishuri)
+      // ════════════════════════════════════════════════════════════════════
+      { test: () => extCount === 2 && indexUp && thumbOut && wy < 0.4,
+        label: 'ibibazo (question)',     conf: 0.74 },
+      { test: () => only(true,true,false,false,false) && thumbIndexDist < 0.5,
+        label: 'igisubizo (answer)',     conf: 0.74 },
+      { test: () => extCount === 4 && thumbOut && wy > 0.45 && wx > 0.35 && wx < 0.65,
+        label: 'igitabo (book)',         conf: 0.74 },
+      { test: () => extCount >= 3 && wy > 0.4 && wx > 0.35 && wx < 0.65 && palmFacingCamera,
+        label: 'kwiga (study/learn)',    conf: 0.73 },
+      { test: () => thumbOut && extCount === 1 && indexUp,
+        label: 'gusobanukirwa (understand)', conf: 0.74 },
+
+      // ════════════════════════════════════════════════════════════════════
+      // SOCIAL  (Imibanire)
+      // ════════════════════════════════════════════════════════════════════
+      { test: () => extCount === 2 && indexUp && middleUp && indexMiddleDist > 0.7 && palmFacingCamera,
+        label: 'amahoro (peace)',        conf: 0.84 },
+      { test: () => openPalm && palmFacingCamera && wy < 0.45 && wx > 0.3 && wx < 0.7,
+        label: 'imbyino (dance)',        conf: 0.72 },
+      { test: () => fist && wy < 0.5 && wx > 0.3 && wx < 0.7 && thumbOut,
+        label: 'akazi (work)',           conf: 0.76 },
+      { test: () => extCount === 4 && thumbOut && wy < 0.45 && palmFacingCamera,
+        label: 'gufasha (help)',         conf: 0.78 },
+      { test: () => extCount >= 3 && wy > 0.5 && wx > 0.3 && wx < 0.7 && !palmFacingCamera,
+        label: 'imbabazi (sorry)',       conf: 0.74 },
+      { test: () => extCount === 4 && !thumbOut && wy < 0.5 && !palmFacingCamera,
+        label: 'reka (please/let)',      conf: 0.74 },
+      { test: () => openPalm && wy > 0.4 && wy < 0.6 && wx > 0.5,
+        label: 'gutumira (invite)',      conf: 0.72 },
+      { test: () => thumbIndexDist < 0.55 && middleUp && ringUp && pinkyUp,
+        label: 'gukunda (love)',         conf: 0.84 },
+      { test: () => extCount === 2 && indexUp && pinkyUp && !middleUp && !ringUp,
+        label: 'injyana (rock on)',      conf: 0.82 },
+    ];
+
+    // evaluate rules in order
+    for (const rule of rules) {
+      if (rule.test()) {
+        return { gesture: rule.label, confidence: rule.conf };
+      }
     }
 
-    return { gesture, confidence };
-  }
-
-  private calculateDistance(point1: any, point2: any): number {
-    return Math.sqrt(
-      Math.pow(point1.x - point2.x, 2) +
-      Math.pow(point1.y - point2.y, 2) +
-      Math.pow(point1.z - point2.z, 2)
-    );
+    return { gesture: 'unknown', confidence: 0.3 };
   }
 
   async createTraining(createTrainingDto: CreateTrainingDto, userId: string) {

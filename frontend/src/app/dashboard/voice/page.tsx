@@ -70,6 +70,7 @@ export default function VoiceToSignPage() {
   const [imageLoadErrors, setImageLoadErrors] = useState<Set<number>>(new Set());
   const [recognitionStatus, setRecognitionStatus] = useState<'idle' | 'starting' | 'listening' | 'error'>('idle');
   const [audioLevel, setAudioLevel] = useState(0);
+  const [selectedLanguage, setSelectedLanguage] = useState('rw-RW');
   const recognitionRef = useRef<any>(null);
   const isListeningRef = useRef(false);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -126,7 +127,7 @@ export default function VoiceToSignPage() {
       const recognition = new SpeechRecognition();
       recognition.continuous = true;
       recognition.interimResults = true;
-      recognition.lang = 'rw-RW';
+      recognition.lang = selectedLanguage;
 
       recognition.onstart = () => {
         console.log('Speech recognition started');
@@ -197,7 +198,7 @@ export default function VoiceToSignPage() {
         recognitionRef.current.stop();
       }
     };
-  }, []);
+  }, [selectedLanguage]);
 
   if (!isHydrated) {
     return null;
@@ -417,6 +418,19 @@ export default function VoiceToSignPage() {
                   )}
                 </div>
               )}
+
+              <div className="flex items-center gap-4 mb-4">
+                <label className="text-sm text-slate-600 dark:text-slate-300">Language:</label>
+                <select
+                  value={selectedLanguage}
+                  onChange={(e) => setSelectedLanguage(e.target.value)}
+                  className="px-3 py-1 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="rw-RW">Kinyarwanda</option>
+                  <option value="en-US">English</option>
+                  <option value="fr-FR">French</option>
+                </select>
+              </div>
 
               <div className="min-h-[120px] p-4 rounded-xl bg-white/50 dark:bg-slate-800/50 border-2 border-slate-200 dark:border-slate-700">
                 <p className="text-slate-600 dark:text-slate-300">
