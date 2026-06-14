@@ -156,4 +156,25 @@ export const api = {
       fetchAPI(`/admin/system/metrics?limit=${limit || 100}${type ? `&type=${type}` : ''}`),
     getDashboardStats: () => fetchAPI('/admin/system/dashboard'),
   },
+  notifications: {
+    getAll: () => fetchAPI('/notifications'),
+    getUnread: () => fetchAPI('/notifications/unread'),
+    getUnreadCount: () => fetchAPI('/notifications/count'),
+    create: (data: any) => fetchAPI('/notifications', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+    markAsRead: (id: string) => fetchAPI(`/notifications/${id}/read`, {
+      method: 'PUT',
+    }),
+    markAllAsRead: () => fetchAPI('/notifications/read-all', {
+      method: 'PUT',
+    }),
+    delete: (id: string) => fetchAPI(`/notifications/${id}`, {
+      method: 'DELETE',
+    }),
+    clearAll: () => fetchAPI('/notifications/clear-all', {
+      method: 'DELETE',
+    }),
+  },
 };

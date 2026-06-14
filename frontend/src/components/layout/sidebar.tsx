@@ -12,6 +12,7 @@ import {
   History,
   Bookmark,
   Settings,
+  Bell,
   Users,
   BarChart3,
   FileText,
@@ -39,25 +40,32 @@ export const Sidebar = () => {
   const { sidebarOpen, toggleSidebar } = useUIStore();
   const isAdmin = user?.role === 'admin';
   const [isMobile, setIsMobile] = React.useState(false);
+  const hasMounted = React.useRef(false);
 
   React.useEffect(() => {
     const checkMobile = () => {
-      setIsMobile(window.innerWidth < 768);
-      if (window.innerWidth < 768 && sidebarOpen) {
-        // Auto-close sidebar on mobile
+      const mobile = window.innerWidth < 768;
+      setIsMobile(mobile);
+      
+      // Close sidebar on mount if on mobile
+      if (!hasMounted.current && mobile && sidebarOpen) {
+        hasMounted.current = true;
+        toggleSidebar();
       }
     };
     
     checkMobile();
     window.addEventListener('resize', checkMobile);
     return () => window.removeEventListener('resize', checkMobile);
-  }, [sidebarOpen]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const userNavItems: NavItem[] = [
     { href: '/dashboard', label: 'Overview', icon: <Home className="w-5 h-5" /> },
     { href: '/dashboard/translation', label: 'Sign to Text', icon: <Hand className="w-5 h-5" /> },
     { href: '/dashboard/voice', label: 'Voice to Sign', icon: <Mic className="w-5 h-5" /> },
     { href: '/dashboard/text-to-sign', label: 'Text to Sign', icon: <Type className="w-5 h-5" /> },
+    { href: '/dashboard/notifications', label: 'Notifications', icon: <Bell className="w-5 h-5" /> },
     { href: '/dashboard/settings', label: 'Settings', icon: <Settings className="w-5 h-5" /> },
   ];
 

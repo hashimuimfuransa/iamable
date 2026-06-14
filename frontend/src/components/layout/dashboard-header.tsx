@@ -6,6 +6,7 @@ import { useUIStore } from '@/store/ui-store';
 import { Menu, LogOut, User, Bell } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import Link from 'next/link';
 
 export const DashboardHeader = () => {
   const { user, logout } = useAuthStore();
@@ -38,10 +39,12 @@ export const DashboardHeader = () => {
 
         {/* Right: User Actions */}
         <div className="flex items-center space-x-2">
-          <Button variant="ghost" size="sm" className="relative">
-            <Bell className="w-5 h-5" />
-            <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full"></span>
-          </Button>
+          <Link href="/dashboard/notifications">
+            <Button variant="ghost" size="sm" className="relative">
+              <Bell className="w-5 h-5" />
+              <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full"></span>
+            </Button>
+          </Link>
           
           <div className="hidden sm:flex items-center space-x-2 px-3 py-1 rounded-full bg-slate-100 dark:bg-slate-800">
             <User className="w-4 h-4 text-slate-600 dark:text-slate-400" />

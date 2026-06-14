@@ -79,10 +79,6 @@ export default function TextToSignPage() {
     }
   }, [isAuthenticated, router, isHydrated]);
 
-  if (!isHydrated) {
-    return null;
-  }
-
   // Real-time conversion as user types
   useEffect(() => {
     if (text.trim()) {
@@ -98,6 +94,10 @@ export default function TextToSignPage() {
       setImageLoadErrors(new Set());
     }
   }, [text]);
+
+  if (!isHydrated) {
+    return null;
+  }
 
   const handleImageError = (index: number) => {
     setImageLoadErrors(prev => new Set(prev).add(index));

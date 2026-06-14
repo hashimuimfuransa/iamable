@@ -17,6 +17,7 @@ const users_module_1 = require("./users/users.module");
 const translations_module_1 = require("./translations/translations.module");
 const ai_module_1 = require("./ai/ai.module");
 const admin_module_1 = require("./admin/admin.module");
+const notifications_module_1 = require("./notifications/notifications.module");
 let AppModule = class AppModule {
 };
 exports.AppModule = AppModule;
@@ -32,6 +33,7 @@ exports.AppModule = AppModule = __decorate([
             translations_module_1.TranslationsModule,
             ai_module_1.AiModule,
             admin_module_1.AdminModule,
+            notifications_module_1.NotificationsModule,
         ],
         controllers: [app_controller_1.AppController],
         providers: [app_service_1.AppService],
